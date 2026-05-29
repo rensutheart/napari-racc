@@ -20,7 +20,7 @@ scatter-plot views to the napari viewer.
 
 ## Installation
 
-Install from PyPI once the package has been published:
+Install from PyPI:
 
 ```bash
 pip install napari-racc
