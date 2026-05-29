@@ -1,0 +1,15 @@
+Required Notice: Copyright 2026 Rensu P. Theart.
+
+napari-racc implements Regression Adjusted Colocalisation Colour Mapping (RACC).
+If you use this software or the RACC method in research, cite:
+
+Theart RP, Loos B, Niesler TR. Regression adjusted colocalisation colour
+mapping (RACC): A novel biological visual analysis method for qualitative
+colocalisation analysis of 3D fluorescence micrographs. PLOS ONE 14(11):
+e0225141. https://doi.org/10.1371/journal.pone.0225141
+
+Use of the RACC method may be covered by patent rights, including US patent
+application US20220189129A1 and related patent family members. The included
+PolyForm Noncommercial License 1.0.0 permits noncommercial use as described in
+LICENSE. Commercial, clinical, diagnostic, or for-profit service use requires a
+separate license from the rights holder.

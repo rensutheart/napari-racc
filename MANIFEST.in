@@ -1,0 +1,5 @@
+include CHANGELOG.md
+include CITATION.cff
+include NOTICE
+include PATENTS.md
+recursive-include docs/images .gitkeep

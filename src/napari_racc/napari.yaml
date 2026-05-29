@@ -1,0 +1,24 @@
+name: napari-racc
+display_name: RACC
+contributions:
+  commands:
+    - id: napari-racc.make_widget
+      title: RACC
+      python_name: napari_racc._widget:RaccWidget
+    - id: napari-racc.sample_data_2d
+      title: RACC example 2D
+      python_name: napari_racc._sample_data:make_sample_data_2d
+    - id: napari-racc.sample_data_3d
+      title: RACC example 3D
+      python_name: napari_racc._sample_data:make_sample_data_3d
+  widgets:
+    - command: napari-racc.make_widget
+      display_name: RACC
+  sample_data:
+    - command: napari-racc.sample_data_2d
+      key: racc_2d
+      display_name: RACC 2D example
+    - command: napari-racc.sample_data_3d
+      key: racc_3d
+      display_name: RACC 3D example
+

@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use napari-racc or the RACC method in research, please cite the RACC paper."
+title: "napari-racc"
+version: "0.1.0"
+date-released: "2026-05-29"
+url: "https://github.com/rensutheart/napari-racc"
+repository-code: "https://github.com/rensutheart/napari-racc"
+license: "PolyForm-Noncommercial-1.0.0"
+authors:
+  - family-names: "Theart"
+    given-names: "Rensu P."
+preferred-citation:
+  type: article
+  title: "Regression adjusted colocalisation colour mapping (RACC): A novel biological visual analysis method for qualitative colocalisation analysis of 3D fluorescence micrographs"
+  authors:
+    - family-names: "Theart"
+      given-names: "Rensu P."
+    - family-names: "Loos"
+      given-names: "Ben"
+    - family-names: "Niesler"
+      given-names: "Thomas R."
+  journal: "PLOS ONE"
+  year: 2019
+  volume: 14
+  issue: 11
+  doi: "10.1371/journal.pone.0225141"

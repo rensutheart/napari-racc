@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "napari-racc"
+version = "0.1.0"
+description = "Regression adjusted colocalisation colour mapping for napari"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "Rensu P. Theart"},
+]
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE", "NOTICE", "PATENTS.md"]
+keywords = [
+    "colocalisation",
+    "colocalization",
+    "fluorescence microscopy",
+    "image analysis",
+    "napari",
+    "RACC",
+    "visualization",
+]
+classifiers = [
+    "Framework :: napari",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+dependencies = [
+    "imageio>=2.20",
+    "magicgui>=0.7",
+    "numpy>=1.24",
+    "qtpy>=2.4",
+    "tifffile>=2022.7.28",
+]
+
+[project.urls]
+Homepage = "https://github.com/rensutheart/napari-racc"
+Repository = "https://github.com/rensutheart/napari-racc"
+Issues = "https://github.com/rensutheart/napari-racc/issues"
+Paper = "https://doi.org/10.1371/journal.pone.0225141"
+Patent = "https://patentimages.storage.googleapis.com/f1/10/5d/798b2ae1eea441/US20220189129A1.pdf"
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.2",
+    "napari[pyqt6]>=0.6",
+    "npe2>=0.8",
+    "pytest>=8",
+    "pytest-qt>=4.4",
+    "ruff>=0.12",
+    "twine>=5",
+]
+
+[project.entry-points."napari.manifest"]
+napari-racc = "napari_racc:napari.yaml"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+exclude = ["napari_racc._tests*"]
+
+[tool.setuptools.package-data]
+napari_racc = ["napari.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/napari_racc/_tests"]
+addopts = ["-ra"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
