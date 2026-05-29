@@ -19,6 +19,14 @@ def _example_dir() -> Path:
     return Path(__file__).resolve().parents[4] / "RACC_v0.8_2"
 
 
+def _has_legacy_examples() -> bool:
+    data_dir = _example_dir()
+    return all(
+        (data_dir / filename).is_file()
+        for filename in ("Red2D.png", "Green2D.png", "RedSphere.tif", "GreenSphere.tif")
+    )
+
+
 def test_perfect_correlation_returns_expected_regression():
     values = np.linspace(0, 255, 256, dtype=np.float32).reshape(16, 16)
     result = compute_racc(values, values, threshold_1=10, threshold_2=10)
@@ -86,6 +94,10 @@ def test_costes_thresholds_for_perfect_correlation_reach_low_threshold():
     assert thresholds.slope == pytest.approx(1.0)
 
 
+@pytest.mark.skipif(
+    not _has_legacy_examples(),
+    reason="legacy RACC example files are not present",
+)
 def test_supplied_2d_examples_compute():
     data_dir = _example_dir()
     red = reduce_to_intensity(iio.imread(data_dir / "Red2D.png"), rgb=True)
@@ -98,6 +110,10 @@ def test_supplied_2d_examples_compute():
     assert result.index.max() > 0
 
 
+@pytest.mark.skipif(
+    not _has_legacy_examples(),
+    reason="legacy RACC example files are not present",
+)
 def test_supplied_3d_stack_crop_computes():
     data_dir = _example_dir()
     red = tifffile.imread(data_dir / "RedSphere.tif")
