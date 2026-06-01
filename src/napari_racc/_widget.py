@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
+import tifffile
 from napari.layers import Image
 from napari.qt.threading import create_worker
 from napari.utils.colormaps import ensure_colormap
@@ -13,12 +17,15 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QVBoxLayout,
@@ -83,6 +90,8 @@ class RaccWidget(QWidget):
 
         self.channel_1_combo = QComboBox()
         self.channel_2_combo = QComboBox()
+        self._configure_layer_combo(self.channel_1_combo)
+        self._configure_layer_combo(self.channel_2_combo)
 
         self.threshold_1_slider, self.threshold_1_spin = self._make_int_control(5)
         self.threshold_2_slider, self.threshold_2_spin = self._make_int_control(5)
@@ -128,9 +137,15 @@ class RaccWidget(QWidget):
 
         self.costes_button = QPushButton("Costes thresholds")
         self.run_button = QPushButton("Run RACC")
+        self.run_button.setMinimumHeight(40)
+        self.run_button.setStyleSheet(
+            "QPushButton { font-weight: 600; padding: 8px; }"
+        )
+        self.export_button = QPushButton("Export RACC TIFF")
+        self.export_button.setEnabled(False)
         self.overlay_button = QPushButton("Overlay")
         self.racc_button = QPushButton("RACC")
-        self.side_by_side_button = QPushButton("Side by side")
+        self.side_by_side_button = QPushButton("3D side by side")
         self.mip_button = QPushButton("MIPs")
 
         self.status_label = QLabel("Select two image layers.")
@@ -149,10 +164,24 @@ class RaccWidget(QWidget):
         self._refresh_layer_choices()
 
     def _build_layout(self) -> None:
-        root = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._scroll_area = QScrollArea()
+        self._scroll_area.setWidgetResizable(True)
+        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        outer_layout.addWidget(self._scroll_area)
+
+        self._content_widget = QWidget()
+        self._scroll_area.setWidget(self._content_widget)
+        root = QVBoxLayout(self._content_widget)
 
         input_group = QGroupBox("Inputs")
         input_layout = QFormLayout(input_group)
+        input_layout.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
         input_layout.addRow("Channel 1", self.channel_1_combo)
         input_layout.addRow("Channel 2", self.channel_2_combo)
         root.addWidget(input_group)
@@ -236,24 +265,40 @@ class RaccWidget(QWidget):
         root.addLayout(scatter_option_row)
         root.addWidget(self.scatter_widget)
 
-        action_row = QHBoxLayout()
-        action_row.addWidget(self.run_button)
-        action_row.addWidget(self.overlay_button)
-        action_row.addWidget(self.racc_button)
-        root.addLayout(action_row)
+        result_group = QGroupBox("Result")
+        result_layout = QVBoxLayout(result_group)
+        result_layout.addWidget(self.run_button)
+        result_layout.addWidget(self.export_button)
+        root.addWidget(result_group)
 
-        view_row = QHBoxLayout()
-        view_row.addWidget(self.side_by_side_button)
-        view_row.addWidget(self.mip_button)
-        root.addLayout(view_row)
+        single_view_group = QGroupBox("Single views")
+        single_view_layout = QHBoxLayout(single_view_group)
+        single_view_layout.addWidget(self.overlay_button)
+        single_view_layout.addWidget(self.racc_button)
+        root.addWidget(single_view_group)
+
+        paired_view_group = QGroupBox("Side-by-side views")
+        paired_view_layout = QHBoxLayout(paired_view_group)
+        paired_view_layout.addWidget(self.side_by_side_button)
+        paired_view_layout.addWidget(self.mip_button)
+        root.addWidget(paired_view_group)
 
         root.addWidget(self.status_label)
         root.addStretch(1)
+
+    def _configure_layer_combo(self, combo: QComboBox) -> None:
+        combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        combo.setMinimumContentsLength(18)
+        combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        combo.currentTextChanged.connect(combo.setToolTip)
 
     def _connect_signals(self) -> None:
         for combo in (self.channel_1_combo, self.channel_2_combo):
             combo.currentIndexChanged.connect(self._schedule_if_live)
             combo.currentIndexChanged.connect(self._sync_scale_from_selected)
+            combo.currentIndexChanged.connect(self._update_result_actions)
 
         controls = (
             self.threshold_1_slider,
@@ -287,6 +332,7 @@ class RaccWidget(QWidget):
 
         self.costes_button.clicked.connect(self.apply_costes_thresholds)
         self.run_button.clicked.connect(self.run_racc)
+        self.export_button.clicked.connect(self.export_racc_tiff)
         self.overlay_button.clicked.connect(self._show_overlay)
         self.racc_button.clicked.connect(self._show_racc)
         self.side_by_side_button.clicked.connect(self._show_side_by_side)
@@ -317,13 +363,17 @@ class RaccWidget(QWidget):
             with QSignalBlocker(combo):
                 combo.clear()
                 combo.addItems(image_names)
+                for index, image_name in enumerate(image_names):
+                    combo.setItemData(index, image_name, Qt.ToolTipRole)
                 if previous in image_names:
                     combo.setCurrentText(previous)
+                combo.setToolTip(combo.currentText())
 
         if len(image_names) >= 2 and not current_2:
             with QSignalBlocker(self.channel_2_combo):
                 self.channel_2_combo.setCurrentIndex(1)
         self._sync_scale_from_selected()
+        self._update_result_actions()
 
     def _make_int_control(
         self,
@@ -553,6 +603,9 @@ class RaccWidget(QWidget):
         self._refresh_bounding_box_visibility()
         QTimer.singleShot(0, self._refresh_bounding_box_visibility)
 
+    def _update_result_actions(self, *args) -> None:
+        self.export_button.setEnabled(self._result_layer() is not None)
+
     def run_racc(self) -> None:
         try:
             channel_1_layer, channel_2_layer = self._selected_layers()
@@ -679,6 +732,7 @@ class RaccWidget(QWidget):
         )
         self._result_layer_name = layer.name
         self._result_pair = pair
+        self._update_result_actions()
         self.scatter_widget.set_axis_labels(pair[0], pair[1])
         self.scatter_widget.set_result(result)
         self.scatter_widget.set_colormap(self._selected_colormap())
@@ -837,6 +891,59 @@ class RaccWidget(QWidget):
         )
         self._refresh_bounding_box_after_view_change()
 
+    def export_racc_tiff(self) -> None:
+        result = self._result_layer()
+        if result is None:
+            self._set_status("Run RACC before exporting a TIFF stack.")
+            self._update_result_actions()
+            return
+
+        file_path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export RACC TIFF",
+            f"{_safe_export_stem(result.name)}.tif",
+            "TIFF files (*.tif *.tiff);;All files (*)",
+        )
+        if not file_path:
+            return
+
+        try:
+            written_path = self._export_racc_tiff_to_path(file_path, result)
+        except Exception as error:  # noqa: BLE001
+            self._set_status(f"RACC TIFF export failed: {error}")
+            return
+        self._set_status(f"Exported RACC TIFF: {written_path}")
+
+    def _export_racc_tiff_to_path(self, file_path, result_layer=None) -> Path:
+        layer = result_layer if result_layer is not None else self._result_layer()
+        if layer is None:
+            raise RaccError("Run RACC before exporting a TIFF stack.")
+
+        path = Path(file_path).expanduser()
+        if path.suffix.lower() not in {".tif", ".tiff"}:
+            path = path.with_suffix(".tif")
+        if path.parent and not path.parent.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+        data = np.asarray(layer.data)
+        if data.ndim < 2:
+            raise RaccError("RACC TIFF export requires a 2D image or 3D stack.")
+        if data.dtype == np.float64 or np.issubdtype(data.dtype, np.floating):
+            export_data = data.astype(np.float32, copy=False)
+        else:
+            export_data = data
+
+        metadata = _tiff_metadata_for_layer(layer, export_data)
+        tifffile.imwrite(
+            path,
+            export_data,
+            photometric="minisblack",
+            metadata={"axes": metadata["axes"]},
+            description=json.dumps(metadata, sort_keys=True),
+            software="napari-racc",
+        )
+        return path
+
     def _set_status(self, text: str) -> None:
         self.status_label.setText(text)
 
@@ -901,6 +1008,60 @@ def _set_layer_contrast_limits(layer, contrast_limits) -> None:
 
 def _result_name(pair: tuple[str, str]) -> str:
     return f"RACC: {pair[0]} x {pair[1]}"
+
+
+def _safe_export_stem(name: str) -> str:
+    safe = "".join(
+        char if char.isalnum() or char in {" ", ".", "_", "-"} else "_"
+        for char in str(name)
+    )
+    safe = "_".join(safe.strip().split())
+    return safe[:160] or "racc_result"
+
+
+def _axes_for_data(data: np.ndarray) -> str:
+    if data.ndim == 2:
+        return "YX"
+    if data.ndim == 3:
+        return "ZYX"
+    return "".join(f"Q{axis}" for axis in range(data.ndim - 2)) + "YX"
+
+
+def _tiff_metadata_for_layer(layer, data: np.ndarray) -> dict:
+    metadata = dict(layer.metadata)
+    return {
+        "axes": _axes_for_data(data),
+        "napari_racc": {
+            "layer_name": str(layer.name),
+            "input_1": _json_safe(metadata.get("racc_input_1", "")),
+            "input_2": _json_safe(metadata.get("racc_input_2", "")),
+            "scale": [float(value) for value in getattr(layer, "scale", ())],
+            "parameters": {
+                str(key): _json_safe(value)
+                for key, value in metadata.items()
+                if key
+                not in {
+                    "napari_racc_kind",
+                    "racc_input_1",
+                    "racc_input_2",
+                }
+            },
+        },
+    }
+
+
+def _json_safe(value):
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    return value
 
 
 def _threshold_to_control_value(value: float) -> int:

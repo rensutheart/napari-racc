@@ -57,10 +57,11 @@ class ScatterHistogramWidget(QWidget):
         target = self._plot_rect()
         painter.drawImage(target, self._image)
         self._draw_overlays(painter, target)
+        self._draw_axes(painter, target)
         self._draw_axis_labels(painter, target)
 
     def _plot_rect(self) -> QRect:
-        margins = self.rect().adjusted(42, 10, -10, -44)
+        margins = self.rect().adjusted(72, 14, -14, -70)
         side = max(1, min(margins.width(), margins.height()))
         left = margins.left() + max(0, (margins.width() - side) // 2)
         top = margins.top() + max(0, (margins.height() - side) // 2)
@@ -199,6 +200,74 @@ class ScatterHistogramWidget(QWidget):
         painter.setPen(max_pen)
         painter.drawLine(point(intersections[0]), point(intersections[1]))
 
+    def _draw_axes(self, painter: QPainter, target: QRect) -> None:
+        max_intensity = float(self._result.parameters.intensity_max)
+        zero_text = _format_axis_value(0.0)
+        max_text = _format_axis_value(max_intensity)
+
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        frame_pen = QPen(QColor(95, 95, 105, 160), 1)
+        painter.setPen(frame_pen)
+        painter.drawLine(target.topLeft(), target.topRight())
+        painter.drawLine(target.topRight(), target.bottomRight())
+
+        axis_pen = QPen(QColor(235, 235, 235, 230), 1)
+        painter.setPen(axis_pen)
+        painter.drawLine(target.bottomLeft(), target.bottomRight())
+        painter.drawLine(target.bottomLeft(), target.topLeft())
+
+        tick_length = 5
+        painter.drawLine(
+            QPointF(target.left(), target.bottom()),
+            QPointF(target.left(), target.bottom() + tick_length),
+        )
+        painter.drawLine(
+            QPointF(target.right(), target.bottom()),
+            QPointF(target.right(), target.bottom() + tick_length),
+        )
+        painter.drawLine(
+            QPointF(target.left(), target.bottom()),
+            QPointF(target.left() - tick_length, target.bottom()),
+        )
+        painter.drawLine(
+            QPointF(target.left(), target.top()),
+            QPointF(target.left() - tick_length, target.top()),
+        )
+
+        label_font = painter.font()
+        point_size = label_font.pointSizeF()
+        if point_size > 0:
+            label_font.setPointSizeF(max(7.0, point_size * 0.78))
+        painter.setFont(label_font)
+        painter.setPen(QColor(230, 230, 230, 235))
+
+        metrics = painter.fontMetrics()
+        max_width = max(metrics.horizontalAdvance(max_text), 24)
+        painter.drawText(
+            QRect(target.left() - 18, target.bottom() + 8, 36, 18),
+            Qt.AlignHCenter | Qt.AlignTop,
+            zero_text,
+        )
+        painter.drawText(
+            QRect(target.right() - max_width // 2, target.bottom() + 8, max_width, 18),
+            Qt.AlignHCenter | Qt.AlignTop,
+            max_text,
+        )
+        painter.drawText(
+            QRect(target.left() - 54, target.bottom() - 9, 42, 18),
+            Qt.AlignRight | Qt.AlignVCenter,
+            zero_text,
+        )
+        painter.drawText(
+            QRect(target.left() - max_width - 12, target.top() - 9, max_width, 18),
+            Qt.AlignRight | Qt.AlignVCenter,
+            max_text,
+        )
+
+        painter.restore()
+
     def _draw_axis_labels(self, painter: QPainter, target: QRect) -> None:
         painter.setPen(QColor(220, 220, 220))
         metrics = painter.fontMetrics()
@@ -206,7 +275,7 @@ class ScatterHistogramWidget(QWidget):
         x_text = metrics.elidedText(self._x_label, Qt.ElideMiddle, target.width())
         x_rect = QRect(
             target.left(),
-            target.bottom() + 12,
+            target.bottom() + 34,
             target.width(),
             24,
         )
@@ -214,7 +283,7 @@ class ScatterHistogramWidget(QWidget):
 
         y_text = metrics.elidedText(self._y_label, Qt.ElideMiddle, target.height())
         painter.save()
-        painter.translate(target.left() - 30, target.center().y())
+        painter.translate(target.left() - 58, target.center().y())
         painter.rotate(-90)
         y_rect = QRect(-target.height() // 2, -12, target.height(), 24)
         painter.drawText(y_rect, Qt.AlignCenter, y_text)
@@ -323,3 +392,12 @@ def _unique_points(points: list[tuple[float, float]]) -> list[tuple[float, float
         if not any(np.allclose(point, existing) for existing in deduped):
             deduped.append((float(point[0]), float(point[1])))
     return deduped
+
+
+def _format_axis_value(value: float) -> str:
+    if not np.isfinite(value):
+        return ""
+    rounded = round(float(value))
+    if abs(float(value) - rounded) < 1e-6:
+        return str(int(rounded))
+    return f"{float(value):.3g}"

@@ -1,5 +1,5 @@
 name: napari-racc
-display_name: RACC
+display_name: napari-racc
 contributions:
   commands:
     - id: napari-racc.make_widget
@@ -21,4 +21,3 @@ contributions:
     - command: napari-racc.sample_data_3d
       key: racc_3d
       display_name: RACC 3D example
-

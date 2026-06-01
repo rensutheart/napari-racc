@@ -3,7 +3,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import tifffile
 from napari.layers import Image
+from qtpy.QtCore import Qt
+from qtpy.QtWidgets import QScrollArea, QSizePolicy
 
 from napari_racc._racc import CostesThresholds
 from napari_racc._widget import (
@@ -107,8 +110,27 @@ def test_widget_instantiates_without_napari_canvas(qtbot):
     assert widget.channel_2_combo.count() == 2
     assert widget.overlay_alpha_spin.value() == 2
     assert widget.volume_alpha_spin.value() == 2
+    assert widget.export_button.isEnabled() is False
+    assert isinstance(widget._scroll_area, QScrollArea)
+    assert widget._scroll_area.widgetResizable() is True
+    assert widget._scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
     assert np.isclose(widget._selected_overlay_gain(), 0.02)
     assert np.isclose(widget._selected_volume_alpha(), 0.02)
+
+
+def test_input_combos_expand_and_expose_full_layer_names(qtbot):
+    long_name = "RACC Red Sphere very long filename with acquisition metadata"
+    viewer = _Viewer([_image(long_name), _image("green channel")])
+    widget = RaccWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert (
+        widget.channel_1_combo.sizePolicy().horizontalPolicy()
+        == QSizePolicy.Policy.Expanding
+    )
+    assert widget.channel_1_combo.currentText() == long_name
+    assert widget.channel_1_combo.toolTip() == long_name
+    assert widget.channel_1_combo.itemData(0, Qt.ToolTipRole) == long_name
 
 
 def test_widget_ignores_racc_generated_layers_in_input_choices(qtbot):
@@ -486,6 +508,41 @@ def test_widget_volume_alpha_handles_napari_thumbnail_failure(qtbot, monkeypatch
     widget.volume_alpha_spin.setValue(94)
 
     assert result.colormap.name == "racc-magma-volume-0.94"
+
+
+def test_widget_exports_racc_result_as_tiff(qtbot, tmp_path):
+    result_data = np.zeros((2, 3, 4), dtype=np.float32)
+    result_data[0] = 0.25
+    result_data[1] = 0.75
+    result = Image(
+        result_data,
+        name="RACC: ch1 x ch2",
+        metadata={
+            "napari_racc_kind": "result",
+            "racc_input_1": "ch1",
+            "racc_input_2": "ch2",
+            "threshold_1": 5,
+            "threshold_2": 6,
+            "theta_degrees": 45,
+        },
+    )
+    viewer = _Viewer(
+        [
+            _image("ch1", shape=(2, 3, 4)),
+            _image("ch2", shape=(2, 3, 4)),
+            result,
+        ]
+    )
+    widget = RaccWidget(viewer)
+    qtbot.addWidget(widget)
+
+    written_path = widget._export_racc_tiff_to_path(tmp_path / "racc_export", result)
+
+    assert written_path == tmp_path / "racc_export.tif"
+    np.testing.assert_allclose(tifffile.imread(written_path), result_data)
+    with tifffile.TiffFile(written_path) as tiff:
+        assert '"axes": "ZYX"' in tiff.pages[0].description
+        assert '"input_1": "ch1"' in tiff.pages[0].description
 
 
 def test_widget_result_update_handles_contrast_thumbnail_failure(qtbot, monkeypatch):

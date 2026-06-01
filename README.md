@@ -8,6 +8,23 @@ The plugin takes two image layers, computes the RACC index in 3D whenever the
 inputs are volumes, and adds interactive overlay, RACC, side-by-side, MIP, and
 scatter-plot views to the napari viewer.
 
+## Screenshots
+
+![RACC 3D side-by-side volume view](https://raw.githubusercontent.com/rensutheart/napari-racc/main/docs/images/racc-side-by-side-volume.png)
+
+3D side-by-side view with the thresholded channel overlay on the left and the
+RACC volume on the right.
+
+![RACC side-by-side MIP view](https://raw.githubusercontent.com/rensutheart/napari-racc/main/docs/images/racc-side-by-side-mip.png)
+
+3D-derived maximum-intensity projection view.
+
+<img src="https://raw.githubusercontent.com/rensutheart/napari-racc/main/docs/images/racc-widget-controls.png" alt="RACC widget controls" width="360">
+
+Scrollable RACC controls with manual thresholds, Costes thresholding, display
+scale controls, probe colors, scatter diagnostics, result export, and view
+switching.
+
 ## Features
 
 - two-channel RACC calculation from napari `Image` layers
@@ -15,8 +32,10 @@ scatter-plot views to the napari viewer.
 - transparent zero-valued RACC voxels for clean volume rendering
 - thresholded RGB overlay volume with selectable probe colors
 - side-by-side overlay/RACC and 3D-derived MIP views
-- scatter histogram with regression, threshold, and percentile-band overlays
+- scatter histogram with visible axes, regression, threshold, and percentile-band overlays
 - XY and Z display scale controls for metadata-light TIFF stacks
+- scrollable control panel with expandable input layer selectors
+- export of the numeric RACC result stack as TIFF
 
 ## Installation
 
@@ -46,11 +65,12 @@ source .venv/bin/activate.fish
 
 1. Open napari.
 2. Open two image stacks or use `File > Open Sample > RACC`.
-3. Start the widget from `Plugins > RACC > RACC`.
+3. Start the widget from `Plugins > RACC (napari-racc)`.
 4. Select channel 1 and channel 2.
 5. Adjust thresholds manually or press `Costes thresholds`.
 6. Press `Run RACC`.
-7. Use `Overlay`, `RACC`, `Side by side`, and `MIPs` to switch views.
+7. Use `Overlay`, `RACC`, `3D side by side`, and `MIPs` to switch views.
+8. Press `Export RACC TIFF` to save the numeric RACC result stack for use in other software.
 
 RACC is calculated over the full 3D volume when 3D inputs are used. The MIP view
 is derived from the 3D calculation; it is not a 2D recalculation.

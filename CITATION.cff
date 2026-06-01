@@ -1,8 +1,8 @@
 cff-version: 1.2.0
 message: "If you use napari-racc or the RACC method in research, please cite the RACC paper."
 title: "napari-racc"
-version: "0.1.0"
-date-released: "2026-05-29"
+version: "0.2.0"
+date-released: "2026-06-01"
 url: "https://github.com/rensutheart/napari-racc"
 repository-code: "https://github.com/rensutheart/napari-racc"
 license: "PolyForm-Noncommercial-1.0.0"
