@@ -42,6 +42,7 @@ from napari_racc._colormaps import (
     racc_display_contrast_limits,
     racc_volume_colormap,
 )
+from napari_racc._napari_compat import guard_empty_translucent_ray
 from napari_racc._racc import (
     CostesThresholds,
     RaccError,
@@ -1078,6 +1079,7 @@ def _configure_racc_volume_layer(layer) -> None:
     _set_layer_contrast_limits(layer, racc_display_contrast_limits())
     if int(layer.ndim) < 3:
         return
+    guard_empty_translucent_ray(layer)
     layer.depiction = "volume"
     layer.rendering = "translucent"
     layer.blending = "translucent"

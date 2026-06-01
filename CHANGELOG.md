@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1 - 2026-06-01
+
+- Fixed napari hover-status errors in 3D translucent volume views when the cursor ray samples no voxels.
+
 ## 0.2.0 - 2026-06-01
 
 - Added TIFF export for the numeric RACC result stack.

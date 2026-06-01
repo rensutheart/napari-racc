@@ -12,6 +12,7 @@ from napari_racc._colormaps import (
     racc_colormap,
     racc_display_contrast_limits,
 )
+from napari_racc._napari_compat import guard_empty_translucent_ray
 from napari_racc._racc import normalize_channels, reduce_to_intensity
 
 RGB_VOLUME_RENDERING_METHOD = "racc_rgb_translucent"
@@ -339,6 +340,7 @@ def _show_result(layer) -> None:
 def _set_translucent_volume_rendering(layer) -> None:
     if int(layer.ndim) < 3:
         return
+    guard_empty_translucent_ray(layer)
     layer.depiction = "volume"
     layer.rendering = "translucent"
 

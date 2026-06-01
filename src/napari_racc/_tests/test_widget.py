@@ -591,6 +591,7 @@ def test_widget_result_update_handles_contrast_thumbnail_failure(qtbot, monkeypa
 
     assert result.contrast_limits == [1e-06, 1.0]
     assert result.rendering == "translucent"
+    assert result._calculate_value_from_ray(np.array([], dtype=np.float32)) is None
 
 
 def test_widget_live_result_refreshes_existing_mips(qtbot):

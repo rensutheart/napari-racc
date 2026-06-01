@@ -166,6 +166,16 @@ def test_show_racc_only_handles_contrast_thumbnail_failure(monkeypatch):
     assert result.rendering == "translucent"
 
 
+def test_translucent_volume_status_reader_ignores_empty_ray():
+    result = Image(np.ones((3, 4, 5), dtype=np.float32), name="RACC")
+    viewer = _Viewer([result])
+
+    show_racc_only(viewer, result)
+
+    assert result._calculate_value_from_ray(np.array([], dtype=np.float32)) is None
+    assert result._calculate_value_from_ray(np.array([0.5], dtype=np.float32)) == 0.5
+
+
 def test_side_by_side_arranges_overlay_volume_left_and_racc_right():
     channel_1 = Image(np.ones((3, 4, 5), dtype=np.float32), name="red")
     channel_2 = Image(np.ones((3, 4, 5), dtype=np.float32), name="green")
