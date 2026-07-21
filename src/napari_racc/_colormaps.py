@@ -7,7 +7,8 @@ from napari.utils.colormaps import Colormap, ensure_colormap
 
 DEFAULT_RACC_COLORMAP = "magma"
 RACC_DISPLAY_MIN = 1e-6
-DEFAULT_RACC_VOLUME_ALPHA = 0.12
+DEFAULT_VOLUME_OPACITY = 1.0
+DEFAULT_BACKGROUND_SUPPRESSION = 2.0
 
 RACC_COLORMAPS = (
     "magma",
@@ -68,45 +69,55 @@ def racc_colormap_name(name: str | None = None) -> str:
 
 
 def racc_display_contrast_limits() -> tuple[float, float]:
-    """Return display limits that discard exact-zero RACC voxels."""
+    """Return fixed RACC display limits that preserve the 0..1 color meaning."""
 
     return (RACC_DISPLAY_MIN, 1.0)
 
 
-def racc_colormap(name: str | None = None) -> Colormap:
-    """Return a RACC display colormap with zero mapped to transparent."""
+def racc_colormap(name: str | None = None, floor: float = 0.0) -> Colormap:
+    """Return a fixed-scale RACC colormap with values through ``floor`` hidden."""
 
     colormap_name = racc_colormap_name(name)
-    return _racc_colormap_with_alpha(
+    floor = _display_floor(floor)
+    controls, colors = _sample_racc_colormap(colormap_name, floor)
+    colors[:, 3] = np.where(controls <= floor, 0.0, colors[:, 3])
+    return _make_racc_colormap(
         colormap_name,
-        alpha_values=None,
-        internal_name=f"racc-{colormap_name}-transparent",
+        controls,
+        colors,
+        internal_name=(
+            f"racc-{colormap_name}-transparent"
+            if floor == 0.0
+            else f"racc-{colormap_name}-floor-{floor:.3f}"
+        ),
     )
 
 
 def racc_volume_colormap(
     name: str | None = None,
-    alpha: float = DEFAULT_RACC_VOLUME_ALPHA,
+    opacity: float = DEFAULT_VOLUME_OPACITY,
+    suppression: float = DEFAULT_BACKGROUND_SUPPRESSION,
+    floor: float = 0.0,
 ) -> Colormap:
-    """Return a low-opacity RACC colormap for accumulated volume rendering."""
+    """Return an opacity-scaled RACC transfer function for volume rendering."""
 
     colormap_name = racc_colormap_name(name)
-    base = ensure_colormap(colormap_name)
-    controls = np.asarray(base.controls, dtype=np.float32)
-    colors = np.asarray(base.colors, dtype=np.float32).copy()
-    alpha = float(np.clip(alpha, 0.0, 1.0))
-
-    if len(controls) == len(colors):
-        alpha_positions = controls
-    else:
-        alpha_positions = np.linspace(0.0, 1.0, len(colors), dtype=np.float32)
-    colors[:, 3] = np.sqrt(np.clip(alpha_positions, 0.0, 1.0)) * alpha
+    opacity = float(np.clip(opacity, 0.0, 1.0))
+    suppression = max(float(suppression), 1.0)
+    floor = _display_floor(floor)
+    controls, colors = _sample_racc_colormap(colormap_name, floor)
+    visible = np.clip((controls - floor) / max(1.0 - floor, RACC_DISPLAY_MIN), 0, 1)
+    colors[:, 3] = visible**suppression * opacity
     colors[0, 3] = 0.0
 
-    return _racc_colormap_with_alpha(
+    return _make_racc_colormap(
         colormap_name,
-        alpha_values=colors[:, 3],
-        internal_name=f"racc-{colormap_name}-volume-{alpha:.2f}",
+        controls,
+        colors,
+        internal_name=(
+            f"racc-{colormap_name}-volume-{opacity:.3f}"
+            f"-s{suppression:.2f}-floor-{floor:.3f}"
+        ),
     )
 
 
@@ -115,6 +126,7 @@ def overlay_channel_colormap(
     alpha: float = 1.0,
     *,
     transfer: str = "linear",
+    suppression: float = DEFAULT_BACKGROUND_SUPPRESSION,
 ) -> Colormap:
     """Return a zero-transparent overlay colormap for one probe color."""
 
@@ -144,8 +156,9 @@ def overlay_channel_colormap(
         name_suffix = f"{gain:.2f}-gain"
     elif transfer == "volume":
         alpha = float(np.clip(alpha, 0.0, 1.0))
+        suppression = max(float(suppression), 1.0)
         controls = np.linspace(0.0, 1.0, 16, dtype=np.float32)
-        alpha_values = np.sqrt(controls) * alpha
+        alpha_values = controls**suppression * alpha
         alpha_values[0] = 0.0
         colors = np.column_stack(
             [
@@ -155,7 +168,7 @@ def overlay_channel_colormap(
                 alpha_values,
             ]
         ).astype(np.float32, copy=False)
-        name_suffix = f"{alpha:.2f}-volume"
+        name_suffix = f"{alpha:.3f}-volume-s{suppression:.2f}"
     elif transfer == "step":
         alpha = float(np.clip(alpha, 0.0, 1.0))
         controls = np.array([0.0, 1e-6, 1.0], dtype=np.float32)
@@ -192,24 +205,44 @@ def overlay_channel_colormap(
     )
 
 
-def _racc_colormap_with_alpha(
+def _display_floor(value: float) -> float:
+    return float(np.clip(value, 0.0, 1.0 - RACC_DISPLAY_MIN))
+
+
+def _sample_racc_colormap(
+    name: str,
+    floor: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    base = ensure_colormap(name)
+    controls = np.unique(
+        np.concatenate(
+            [
+                np.linspace(0.0, 1.0, 257, dtype=np.float32),
+                np.asarray(base.controls, dtype=np.float32),
+                np.asarray([floor], dtype=np.float32),
+            ]
+        )
+    )
+    colors = np.asarray(base.map(controls), dtype=np.float32).copy()
+    return controls, colors
+
+
+def _make_racc_colormap(
     name: str | None,
-    alpha_values: np.ndarray | None,
+    controls: np.ndarray,
+    colors: np.ndarray,
     internal_name: str,
 ) -> Colormap:
     colormap_name = racc_colormap_name(name)
     base = ensure_colormap(colormap_name)
-    colors = np.asarray(base.colors, dtype=np.float32).copy()
-    if alpha_values is not None:
-        colors[:, 3] = np.asarray(alpha_values, dtype=np.float32)
 
     return Colormap(
         colors,
         name=internal_name,
         display_name=getattr(base, "_display_name", colormap_name),
-        controls=np.asarray(base.controls, dtype=np.float32),
-        interpolation=base.interpolation,
+        controls=controls,
+        interpolation="linear",
         nan_color=[0.0, 0.0, 0.0, 0.0],
         low_color=[0.0, 0.0, 0.0, 0.0],
-        high_color=base.high_color,
+        high_color=colors[-1],
     )

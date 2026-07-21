@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
+import pytest
 from napari.layers import Image
 
 from napari_racc._views import (
+    RGB_VOLUME_RENDERING_METHODS,
+    SCALAR_ADDITIVE_RENDERING_METHOD,
+    _apply_rgb_volume_shader,
+    _apply_scalar_volume_shader,
     _overlay_channel_volumes,
     _overlay_rgba_volume,
+    racc_colormap_for_layer,
     show_mips,
     show_overlay,
     show_racc_only,
     show_side_by_side,
+    update_mips,
 )
 
 
@@ -73,7 +82,14 @@ def test_show_mips_creates_flat_overlay_and_racc_layers():
     )
     viewer = _Viewer([channel_1, channel_2, result])
 
-    show_mips(viewer, channel_1, channel_2, result)
+    show_mips(
+        viewer,
+        channel_1,
+        channel_2,
+        result,
+        intensity_opacity=0.64,
+        racc_opacity=0.37,
+    )
 
     overlay = viewer.layers["RACC overlay MIP: red x green"]
     result_mip = viewer.layers["RACC: red x green MIP"]
@@ -92,10 +108,55 @@ def test_show_mips_creates_flat_overlay_and_racc_layers():
     assert result_column == 1
     assert overlay.rgb is True
     assert overlay.data.shape == (4, 5, 3)
+    assert np.isclose(overlay.opacity, 0.64)
     assert tuple(overlay.scale) == (0.5, 0.5)
     assert result_mip.data.shape == (4, 5)
+    assert np.isclose(result_mip.opacity, 0.37)
     assert result_mip.contrast_limits[0] > 0.0
     assert result_mip.colormap.map([0.0])[0, 3] == 0.0
+
+
+def test_mips_apply_channel_cutoffs_and_racc_floor_before_projection():
+    channel_1 = Image(
+        np.array(
+            [
+                [[55, 100, 255]],
+                [[20, 120, 200]],
+            ],
+            dtype=np.float32,
+        ),
+        name="red",
+    )
+    channel_2 = Image(np.zeros((2, 1, 3), dtype=np.float32), name="green")
+    result_data = np.array(
+        [
+            [[0.2, 0.6, 0.9]],
+            [[0.5, 0.8, 0.4]],
+        ],
+        dtype=np.float32,
+    )
+    result = Image(result_data.copy(), name="RACC")
+    viewer = _Viewer([channel_1, channel_2, result])
+
+    update_mips(
+        viewer,
+        channel_1,
+        channel_2,
+        result,
+        display_cutoff_1=55,
+        display_cutoff_2=5,
+        racc_display_floor=0.5,
+    )
+
+    overlay = viewer.layers["RACC overlay MIP: red x green"]
+    result_mip = viewer.layers["RACC MIP"]
+    expected_red = np.array([0.0, (120.0 - 55.0) / 200.0, 1.0])
+    np.testing.assert_allclose(overlay.data[0, :, 0], expected_red, atol=1e-6)
+    np.testing.assert_array_equal(overlay.data[0, :, 1:], 0.0)
+    np.testing.assert_allclose(result_mip.data, [[0.0, 0.8, 0.9]])
+    np.testing.assert_array_equal(result.data, result_data)
+    assert result_mip.colormap.map([0.5])[0, 3] == 0.0
+    assert result_mip.contrast_limits == [1e-6, 1.0]
 
 
 def test_single_panel_views_disable_grid_shape_and_reset_camera():
@@ -127,7 +188,7 @@ def test_single_panel_views_disable_grid_shape_and_reset_camera():
     assert overlay.blending == "translucent"
     assert overlay.rendering == "translucent"
     assert overlay.depiction == "volume"
-    assert overlay.data[..., 3].min() == 1.0
+    assert np.isclose(overlay.data[..., 3].min(), 1.0)
 
     viewer.grid.enabled = True
     viewer.grid.shape = (1, 2)
@@ -183,7 +244,14 @@ def test_side_by_side_arranges_overlay_volume_left_and_racc_right():
     mip = Image(np.ones((4, 5), dtype=np.float32), name="RACC MIP")
     viewer = _Viewer([mip, result, channel_2, channel_1])
 
-    show_side_by_side(viewer, channel_1, channel_2, result, overlay_alpha=0.42)
+    show_side_by_side(
+        viewer,
+        channel_1,
+        channel_2,
+        result,
+        intensity_opacity=0.42,
+        racc_opacity=0.36,
+    )
 
     overlay = viewer.layers["RACC overlay volume: red x green"]
 
@@ -203,6 +271,44 @@ def test_side_by_side_arranges_overlay_volume_left_and_racc_right():
     assert overlay.opacity == 1.0
     assert np.isclose(overlay.data[..., 3].max(), 0.42)
     assert overlay.rendering == "translucent"
+    assert result.opacity == 1.0
+    assert np.isclose(result.colormap.map([1.0])[0, 3], 0.36)
+
+
+def test_side_by_side_2d_uses_opacity_on_layers_not_transfer_alpha():
+    channel_1 = Image(
+        np.array([[0.0, 255.0], [128.0, 0.0]], dtype=np.float32),
+        name="red",
+    )
+    channel_2 = Image(
+        np.array([[0.0, 0.0], [128.0, 255.0]], dtype=np.float32),
+        name="green",
+    )
+    result_data = np.array([[0.0, 0.5], [0.75, 1.0]], dtype=np.float32)
+    result = Image(result_data.copy(), name="RACC")
+    viewer = _Viewer([channel_1, channel_2, result])
+
+    show_side_by_side(
+        viewer,
+        channel_1,
+        channel_2,
+        result,
+        intensity_opacity=0.72,
+        racc_opacity=0.41,
+        background_suppression=4.0,
+        rendering_mode="additive",
+    )
+
+    overlay = viewer.layers["RACC overlay volume: red x green"]
+    assert viewer.dims.ndisplay == 2
+    assert np.isclose(overlay.opacity, 0.72)
+    assert np.isclose(result.opacity, 0.41)
+    np.testing.assert_array_equal(
+        overlay.data[..., 3],
+        np.array([[0.0, 1.0], [1.0, 1.0]], dtype=np.float32),
+    )
+    assert np.isclose(result.colormap.map([1.0])[0, 3], 1.0)
+    np.testing.assert_array_equal(result.data, result_data)
 
 
 def test_side_by_side_after_mips_clears_stale_mip_view_state():
@@ -216,7 +322,14 @@ def test_side_by_side_after_mips_clears_stale_mip_view_state():
     result.bounding_box.visible = True
 
     show_mips(viewer, channel_1, channel_2, result)
-    show_side_by_side(viewer, channel_1, channel_2, result, overlay_alpha=0.42)
+    show_side_by_side(
+        viewer,
+        channel_1,
+        channel_2,
+        result,
+        intensity_opacity=0.42,
+        racc_opacity=0.36,
+    )
 
     overlay_mip = viewer.layers["RACC overlay MIP: red x green"]
     result_mip = viewer.layers["RACC MIP"]
@@ -234,6 +347,132 @@ def test_side_by_side_after_mips_clears_stale_mip_view_state():
     assert viewer.layers.index(result) == 1
 
 
+@pytest.mark.parametrize(
+    (
+        "rendering_mode",
+        "expected_overlay_transfer",
+        "expected_racc_transfer",
+        "expected_overlay_layer_opacity",
+        "expected_racc_layer_opacity",
+    ),
+    [
+        ("translucent", 0.4, 0.65, 1.0, 1.0),
+        ("mip", 1.0, 1.0, 0.4, 0.65),
+        ("additive", 0.4, 0.65, 1.0, 1.0),
+    ],
+)
+def test_side_by_side_applies_one_render_mode_to_both_volumes(
+    rendering_mode,
+    expected_overlay_transfer,
+    expected_racc_transfer,
+    expected_overlay_layer_opacity,
+    expected_racc_layer_opacity,
+):
+    channel_1 = Image(np.ones((2, 3, 4), dtype=np.float32), name="red")
+    channel_2 = Image(np.ones((2, 3, 4), dtype=np.float32), name="green")
+    result = Image(np.ones((2, 3, 4), dtype=np.float32), name="RACC")
+    viewer = _Viewer([channel_1, channel_2, result])
+
+    show_side_by_side(
+        viewer,
+        channel_1,
+        channel_2,
+        result,
+        intensity_opacity=0.4,
+        racc_opacity=0.65,
+        colormap_name="viridis",
+        racc_display_floor=0.2,
+        background_suppression=2.0,
+        rendering_mode=rendering_mode,
+    )
+
+    overlay = viewer.layers["RACC overlay volume: red x green"]
+    assert overlay.rendering == rendering_mode
+    assert result.rendering == rendering_mode
+    assert np.isclose(overlay.data[..., 3].max(), expected_overlay_transfer)
+    assert np.isclose(overlay.opacity, expected_overlay_layer_opacity)
+    assert np.isclose(result.opacity, expected_racc_layer_opacity)
+    assert result.colormap.name.startswith("racc-viridis-")
+    assert result.colormap.map([0.2])[0, 3] == 0.0
+    assert np.isclose(
+        result.colormap.map([1.0])[0, 3],
+        expected_racc_transfer,
+    )
+    assert result.contrast_limits == [1e-6, 1.0]
+
+
+def test_racc_colormap_for_layer_preserves_selected_colormap_in_every_mode():
+    result = Image(np.ones((2, 3, 4), dtype=np.float32), name="RACC")
+
+    for rendering_mode in ("translucent", "mip", "additive"):
+        colormap = racc_colormap_for_layer(
+            result,
+            "plasma",
+            racc_display_floor=0.3,
+            racc_opacity=0.2,
+            background_suppression=2.5,
+            rendering_mode=rendering_mode,
+        )
+        assert colormap.name.startswith("racc-plasma-")
+        assert colormap.map([0.3])[0, 3] == 0.0
+
+
+def test_rgb_volume_shader_tracks_the_selected_global_render_mode():
+    layer = Image(np.ones((2, 3, 4, 4), dtype=np.float32), rgb=True, name="overlay")
+    node = SimpleNamespace(_rendering_methods={"translucent": {}}, method=None)
+    visual = SimpleNamespace(node=node)
+
+    class _VisualMap:
+        def get(self, requested_layer):
+            assert requested_layer is layer
+            return visual
+
+    viewer = SimpleNamespace(
+        window=SimpleNamespace(
+            _qt_viewer=SimpleNamespace(layer_to_visual=_VisualMap()),
+        )
+    )
+
+    for rendering_mode, shader_method in RGB_VOLUME_RENDERING_METHODS.items():
+        layer.rendering = rendering_mode
+        assert _apply_rgb_volume_shader(viewer, layer) is True
+        assert node.method == shader_method
+        assert shader_method in node._rendering_methods
+
+
+def test_scalar_additive_shader_restores_standard_modes_when_switched():
+    layer = Image(np.ones((2, 3, 4), dtype=np.float32), name="RACC")
+    node = SimpleNamespace(
+        _rendering_methods={"translucent": {}, "mip": {}, "additive": {}},
+        method=None,
+    )
+    visual = SimpleNamespace(node=node)
+
+    class _VisualMap:
+        def get(self, requested_layer):
+            assert requested_layer is layer
+            return visual
+
+    viewer = SimpleNamespace(
+        window=SimpleNamespace(
+            _qt_viewer=SimpleNamespace(layer_to_visual=_VisualMap()),
+        )
+    )
+
+    layer.rendering = "additive"
+    assert _apply_scalar_volume_shader(viewer, layer) is True
+    assert node.method == SCALAR_ADDITIVE_RENDERING_METHOD
+
+    layer.rendering = "mip"
+    assert _apply_scalar_volume_shader(viewer, layer) is True
+    assert node.method == "mip"
+
+    node.method = SCALAR_ADDITIVE_RENDERING_METHOD
+    layer.rendering = "translucent"
+    assert _apply_scalar_volume_shader(viewer, layer) is True
+    assert node.method == "translucent"
+
+
 def test_overlay_volume_thresholds_channels_and_hides_background():
     channel_1 = Image(
         np.array([[[0, 10], [255, 3]]], dtype=np.float32),
@@ -247,18 +486,36 @@ def test_overlay_volume_thresholds_channels_and_hides_background():
     red, green = _overlay_channel_volumes(
         channel_1,
         channel_2,
-        threshold_1=5,
-        threshold_2=5,
+        display_cutoff_1=5,
+        display_cutoff_2=5,
     )
 
     assert red.shape == (1, 2, 2)
     assert green.shape == (1, 2, 2)
     assert red[0, 0, 0] == 0.0
     assert green[0, 0, 0] == 0.0
-    assert red[0, 0, 1] > 0.0
+    assert np.isclose(red[0, 0, 1], (10.0 - 5.0) / (255.0 - 5.0))
     assert green[0, 0, 1] == 0.0
     assert red[0, 1, 1] == 0.0
-    assert green[0, 1, 1] > 0.0
+    assert np.isclose(green[0, 1, 1], (128.0 - 5.0) / (255.0 - 5.0))
+
+
+def test_overlay_volume_maps_the_cutoff_itself_to_zero():
+    channel_1 = Image(
+        np.array([[[55, 155, 255]]], dtype=np.float32),
+        name="red",
+    )
+    channel_2 = Image(np.zeros((1, 1, 3), dtype=np.float32), name="green")
+
+    red, green = _overlay_channel_volumes(
+        channel_1,
+        channel_2,
+        display_cutoff_1=55,
+        display_cutoff_2=0,
+    )
+
+    np.testing.assert_allclose(red, [[[0.0, 0.5, 1.0]]], atol=1e-6)
+    np.testing.assert_array_equal(green, 0.0)
 
 
 def test_overlay_rgba_volume_uses_selected_probe_colors_and_transparency():
@@ -274,16 +531,22 @@ def test_overlay_rgba_volume_uses_selected_probe_colors_and_transparency():
     rgba = _overlay_rgba_volume(
         channel_1,
         channel_2,
-        threshold_1=5,
-        threshold_2=5,
+        display_cutoff_1=5,
+        display_cutoff_2=5,
         overlay_color_1="magenta",
         overlay_color_2="cyan",
-        overlay_alpha=0.5,
+        intensity_opacity=0.5,
+        background_suppression=2.0,
     )
 
+    midpoint = (128.0 - 5.0) / (255.0 - 5.0)
     assert rgba.shape == (1, 2, 2, 4)
     np.testing.assert_allclose(rgba[0, 0, 0], [0.0, 0.0, 0.0, 0.0])
     np.testing.assert_allclose(rgba[0, 0, 1], [1.0, 0.0, 1.0, 0.5])
     np.testing.assert_allclose(rgba[0, 1, 0], [0.0, 1.0, 1.0, 0.5])
-    np.testing.assert_allclose(rgba[0, 1, 1, :3], [0.5, 0.5, 1.0], atol=0.01)
-    assert 0.0 < rgba[0, 1, 1, 3] < 0.5
+    np.testing.assert_allclose(
+        rgba[0, 1, 1, :3],
+        [midpoint, midpoint, min(2.0 * midpoint, 1.0)],
+        atol=1e-6,
+    )
+    assert np.isclose(rgba[0, 1, 1, 3], 0.5 * midpoint**2)

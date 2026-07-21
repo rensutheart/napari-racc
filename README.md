@@ -19,16 +19,15 @@ RACC volume on the right.
 
 3D-derived maximum-intensity projection view.
 
-<img src="https://raw.githubusercontent.com/rensutheart/napari-racc/main/docs/images/racc-widget-controls.png" alt="RACC widget controls" width="360">
-
-Scrollable RACC controls with manual thresholds, Costes thresholding, display
-scale controls, probe colors, scatter diagnostics, result export, and view
-switching.
-
 ## Features
 
 - two-channel RACC calculation from napari `Image` layers
 - live threshold, theta, percentile, and Costes threshold controls
+- linked analysis/display cutoffs with optional display-only channel thresholds
+- independent RACC display minimum without changing the numeric result
+- synchronized translucent, maximum-intensity, and additive 3D rendering modes
+- separate intensity and RACC opacity controls, plus background suppression for
+  clearer deep structures
 - transparent zero-valued RACC voxels for clean volume rendering
 - thresholded RGB overlay volume with selectable probe colors
 - side-by-side overlay/RACC and 3D-derived MIP views
@@ -69,8 +68,18 @@ source .venv/bin/activate.fish
 4. Select channel 1 and channel 2.
 5. Adjust thresholds manually or press `Costes thresholds`.
 6. Press `Run RACC`.
-7. Use `Overlay`, `RACC`, `3D side by side`, and `MIPs` to switch views.
-8. Press `Export RACC TIFF` to save the numeric RACC result stack for use in other software.
+7. Keep `Link channel cutoffs to analysis thresholds` enabled for a directly
+   comparable intensity view, or disable it to clean up the display without
+   changing the analysis.
+8. Choose `Translucent`, `Maximum intensity (MIP)`, or `Additive` under
+   `3D rendering`; the selection is applied to both the intensity overlay and
+   the RACC volume.
+9. Use the RACC display minimum and background suppression to remove weak haze,
+   then set the intensity and RACC opacities independently from 0 to 100. These
+   display controls do not change the calculated or exported RACC values.
+10. Use `Overlay`, `RACC`, `3D side by side`, and `2D Z-MIPs` to switch views.
+11. Press `Export RACC TIFF` to save the numeric RACC result stack for use in
+    other software.
 
 RACC is calculated over the full 3D volume when 3D inputs are used. The MIP view
 is derived from the 3D calculation; it is not a 2D recalculation.
