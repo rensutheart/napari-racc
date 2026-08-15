@@ -26,8 +26,8 @@ RACC volume on the right.
 - linked analysis/display cutoffs with optional display-only channel thresholds
 - independent RACC display minimum without changing the numeric result
 - synchronized translucent, maximum-intensity, and additive 3D rendering modes
-- separate intensity and RACC opacity controls, plus background suppression for
-  clearer deep structures
+- 3D-only intensity and RACC opacity controls, plus background suppression for
+  clearer deep structures without making 2D slices or fixed MIPs faint
 - transparent zero-valued RACC voxels for clean volume rendering
 - thresholded RGB overlay volume with selectable probe colors
 - side-by-side overlay/RACC and 3D-derived MIP views
@@ -71,12 +71,14 @@ source .venv/bin/activate.fish
 7. Keep `Link channel cutoffs to analysis thresholds` enabled for a directly
    comparable intensity view, or disable it to clean up the display without
    changing the analysis.
-8. Choose `Translucent`, `Maximum intensity (MIP)`, or `Additive` under
-   `3D rendering`; the selection is applied to both the intensity overlay and
-   the RACC volume.
-9. Use the RACC display minimum and background suppression to remove weak haze,
-   then set the intensity and RACC opacities independently from 0 to 100. These
-   display controls do not change the calculated or exported RACC values.
+8. Choose `Translucent`, `Maximum intensity (MIP)`, or `Additive` with the
+   `Rendering method` control under `3D volume rendering`; the selection is
+   applied to both the intensity overlay and the RACC volume.
+9. Under `Display mapping`, use the channel cutoffs and RACC display minimum to
+   remove weak haze in both 2D and 3D. Under `3D volume rendering`, set the
+   intensity/RACC opacities and background suppression. Those volume controls
+   are deliberately ignored in single-slice and fixed `2D Z-MIPs` views. None
+   of these display controls changes the calculated or exported RACC values.
 10. Use `Overlay`, `RACC`, `3D side by side`, and `2D Z-MIPs` to switch views.
 11. Press `Export RACC TIFF` to save the numeric RACC result stack for use in
     other software.

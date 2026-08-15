@@ -14,14 +14,14 @@ from napari_racc._widget import MINIMUM_WIDGET_WIDTH, RaccWidget
 
 class _Event:
     def __init__(self):
-        self.callback = None
+        self.callbacks = []
 
     def connect(self, callback):
-        self.callback = callback
+        self.callbacks.append(callback)
 
     def emit(self):
-        if self.callback is not None:
-            self.callback()
+        for callback in tuple(self.callbacks):
+            callback()
 
 
 class _Events:
@@ -273,6 +273,9 @@ def test_widget_display_controls_do_not_schedule_live_analysis(qtbot):
     assert widget.display_cutoff_2_spin.isEnabled() is False
     assert widget._debounce_timer.isActive() is False
 
+    widget.threshold_1_slider.setValue(27)
+    assert widget.display_cutoff_1_spin.value() == 27
+
 
 def test_widget_bounding_box_checkbox_updates_3d_layers(qtbot):
     viewer = _Viewer(
@@ -378,9 +381,7 @@ def test_widget_colormap_dropdown_updates_scatter_and_result_layer(qtbot):
     assert viewer.layers["RACC: ch1 x ch2"].colormap.map([0.05])[0, 3] == 0.0
 
 
-def test_widget_intensity_opacity_and_suppression_refresh_raw_overlay_transfer(
-    qtbot,
-):
+def test_widget_intensity_opacity_and_suppression_are_shader_only(qtbot):
     channel_1 = Image(
         np.array(
             [
@@ -402,22 +403,31 @@ def test_widget_intensity_opacity_and_suppression_refresh_raw_overlay_transfer(
     widget.background_suppression_spin.setValue(2.0)
 
     widget._show_overlay()
+    widget._display_data_timer.stop()
 
     overlay = viewer.layers["RACC overlay volume: ch1 x ch2"]
     assert np.isclose(widget._selected_intensity_opacity(), 1.0)
-    np.testing.assert_allclose(
-        overlay.data[0, :, :, 3],
-        [[0.0, 0.5**2], [1.0, 0.0]],
-        atol=1e-6,
+    assert overlay.data.dtype == np.uint8
+    np.testing.assert_array_equal(
+        overlay.data[0, :, :, 0],
+        [[0, 128], [255, 0]],
     )
+    np.testing.assert_array_equal(
+        overlay.data[0, :, :, 3],
+        [[0, 128], [255, 0]],
+    )
+    original_data = overlay.data
+    set_data_events = []
+    overlay.events.set_data.connect(lambda *_: set_data_events.append(True))
 
     widget.intensity_opacity_spin.setValue(50)
     widget.background_suppression_spin.setValue(3.0)
 
-    assert np.isclose(
-        overlay.data[0, 0, 1, 3],
-        0.5 * 0.5**3,
-    )
+    assert overlay.data is original_data
+    assert set_data_events == []
+    assert overlay.opacity == 1.0
+    assert np.isclose(overlay._racc_volume_opacity, 0.5)
+    assert np.isclose(overlay._racc_background_suppression, 3.0)
 
 
 def test_widget_opacities_are_independent_bounded_percentages(qtbot):
@@ -442,6 +452,106 @@ def test_widget_opacities_are_independent_bounded_percentages(qtbot):
     assert widget.racc_opacity_spin.value() == 63
     assert widget.racc_opacity_slider.value() == 63
     assert np.isclose(widget._selected_racc_opacity(), 0.63)
+
+
+def test_integer_slider_and_spin_emit_one_external_change_per_edit(qtbot):
+    widget = RaccWidget(_Viewer())
+    qtbot.addWidget(widget)
+    events = []
+    widget.intensity_opacity_slider.valueChanged.connect(
+        lambda value: events.append(("slider", value))
+    )
+    widget.intensity_opacity_spin.valueChanged.connect(
+        lambda value: events.append(("spin", value))
+    )
+
+    widget.intensity_opacity_slider.setValue(44)
+    widget.intensity_opacity_spin.setValue(55)
+
+    assert events == [("slider", 44), ("spin", 55)]
+
+
+def test_widget_scale_change_updates_transforms_without_set_data(qtbot):
+    result = _image(
+        "RACC: ch1 x ch2",
+        shape=(2, 3, 4),
+        metadata={
+            "napari_racc_kind": "result",
+            "racc_input_1": "ch1",
+            "racc_input_2": "ch2",
+        },
+    )
+    overlay = Image(
+        np.zeros((2, 3, 4, 4), dtype=np.uint8),
+        rgb=True,
+        name="RACC overlay volume: ch1 x ch2",
+        metadata={"napari_racc_kind": "overlay"},
+    )
+    overlay_mip = Image(
+        np.zeros((3, 4, 3), dtype=np.uint8),
+        rgb=True,
+        name="RACC overlay MIP: ch1 x ch2",
+        metadata={"napari_racc_kind": "mip"},
+    )
+    result_mip = Image(
+        np.zeros((3, 4), dtype=np.float32),
+        name="RACC: ch1 x ch2 MIP",
+        metadata={"napari_racc_kind": "mip"},
+    )
+    viewer = _Viewer(
+        [
+            _image("ch1", shape=(2, 3, 4)),
+            _image("ch2", shape=(2, 3, 4)),
+            result,
+            overlay,
+            overlay_mip,
+            result_mip,
+        ]
+    )
+    widget = RaccWidget(viewer)
+    qtbot.addWidget(widget)
+    data_objects = {layer.name: layer.data for layer in viewer.layers}
+    set_data_events = []
+    for layer in viewer.layers:
+        layer.events.set_data.connect(
+            lambda *_args, name=layer.name: set_data_events.append(name)
+        )
+
+    widget.z_scale_spin.setValue(2.5)
+    widget.xy_scale_spin.setValue(1.4)
+
+    for name in ("ch1", "ch2", result.name, overlay.name):
+        assert tuple(viewer.layers[name].scale) == (2.5, 1.4, 1.4)
+    for name in (overlay_mip.name, result_mip.name):
+        assert tuple(viewer.layers[name].scale) == (1.4, 1.4)
+    assert set_data_events == []
+    assert all(viewer.layers[name].data is data for name, data in data_objects.items())
+
+
+def test_cutoff_edits_coalesce_into_one_background_overlay_update(qtbot):
+    viewer = _Viewer(
+        [
+            _image("ch1", shape=(2, 8, 8)),
+            _image("ch2", shape=(2, 8, 8)),
+        ]
+    )
+    widget = RaccWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.link_display_cutoffs_checkbox.setChecked(False)
+    widget._show_overlay()
+    widget._display_data_timer.stop()
+    overlay = viewer.layers["RACC overlay volume: ch1 x ch2"]
+    set_data_events = []
+    overlay.events.set_data.connect(lambda *_: set_data_events.append(True))
+
+    widget.display_cutoff_1_spin.setValue(20)
+    widget.display_cutoff_2_spin.setValue(30)
+
+    qtbot.waitUntil(
+        lambda: len(set_data_events) == 1 and not widget._display_worker_active,
+        timeout=3000,
+    )
+    assert set_data_events == [True]
 
 
 def test_widget_rendering_mode_updates_both_existing_3d_volumes(qtbot):
@@ -470,6 +580,8 @@ def test_widget_rendering_mode_updates_both_existing_3d_volumes(qtbot):
     widget._show_side_by_side()
 
     overlay = viewer.layers["RACC overlay volume: ch1 x ch2"]
+    original_overlay_data = overlay.data
+    original_result_data = result.data
     assert overlay.rendering == "mip"
     assert result.rendering == "mip"
     assert np.isclose(overlay.opacity, 0.83)
@@ -485,11 +597,10 @@ def test_widget_rendering_mode_updates_both_existing_3d_volumes(qtbot):
     assert result.rendering == "additive"
     assert overlay.opacity == 1.0
     assert result.opacity == 1.0
-    assert np.isclose(overlay.data[..., 3].max(), 0.83)
-    assert np.isclose(
-        result.colormap.map([1.0])[0, 3],
-        0.67,
-    )
+    assert np.isclose(overlay._racc_volume_opacity, 0.83)
+    assert overlay.data is original_overlay_data
+    assert result.data is original_result_data
+    assert np.isclose(result.colormap.map([1.0])[0, 3], 0.67)
     assert widget.intensity_opacity_spin.isEnabled() is True
     assert widget.racc_opacity_spin.isEnabled() is True
     assert widget.background_suppression_spin.isEnabled() is True
@@ -500,11 +611,13 @@ def test_widget_rendering_mode_updates_both_existing_3d_volumes(qtbot):
     assert result.rendering == "translucent"
     assert overlay.opacity == 1.0
     assert result.opacity == 1.0
-    assert np.isclose(overlay.data[..., 3].max(), 0.83)
+    assert np.isclose(overlay._racc_volume_opacity, 0.83)
+    assert overlay.data is original_overlay_data
+    assert result.data is original_result_data
     assert np.isclose(result.colormap.map([1.0])[0, 3], 0.67)
 
 
-def test_widget_2d_views_use_independent_layer_opacities(qtbot):
+def test_widget_2d_views_ignore_3d_volume_opacities(qtbot):
     result_data = np.array([[0.2, 0.8], [0.5, 1.0]], dtype=np.float32)
     result = Image(
         result_data.copy(),
@@ -537,15 +650,73 @@ def test_widget_2d_views_use_independent_layer_opacities(qtbot):
     widget._show_side_by_side()
 
     overlay = viewer.layers["RACC overlay volume: ch1 x ch2"]
-    assert np.isclose(overlay.opacity, 0.8)
-    assert np.isclose(result.opacity, 0.35)
-    assert np.isclose(overlay.data[..., 3].max(), 1.0)
+    assert np.isclose(overlay.opacity, 1.0)
+    assert np.isclose(result.opacity, 1.0)
+    assert overlay.blending == "opaque"
+    assert overlay.data.shape[-1] == 4
     assert np.isclose(result.colormap.map([1.0])[0, 3], 1.0)
     np.testing.assert_array_equal(result.data, result_data)
     assert widget.rendering_combo.isEnabled() is False
+    assert widget.intensity_opacity_spin.isEnabled() is False
+    assert widget.racc_opacity_spin.isEnabled() is False
+    assert widget.background_suppression_spin.isEnabled() is False
+
+
+def test_widget_ndisplay_round_trip_neutralizes_and_restores_volume_style(qtbot):
+    result = _image(
+        "RACC: ch1 x ch2",
+        shape=(2, 4, 5),
+        metadata={
+            "napari_racc_kind": "result",
+            "racc_input_1": "ch1",
+            "racc_input_2": "ch2",
+        },
+    )
+    viewer = _Viewer(
+        [
+            _image("ch1", shape=(2, 4, 5)),
+            _image("ch2", shape=(2, 4, 5)),
+            result,
+        ],
+        ndisplay=3,
+    )
+    widget = RaccWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.intensity_opacity_spin.setValue(80)
+    widget.racc_opacity_spin.setValue(35)
+    widget.background_suppression_spin.setValue(3.0)
+    widget._show_side_by_side()
+    widget._display_data_timer.stop()
+    overlay = viewer.layers["RACC overlay volume: ch1 x ch2"]
+    original_overlay_data = overlay.data
+    original_result_data = result.data
+    set_data_events = []
+    overlay.events.set_data.connect(lambda *_: set_data_events.append("overlay"))
+    result.events.set_data.connect(lambda *_: set_data_events.append("result"))
+
+    viewer.dims.ndisplay = 2
+    viewer.dims.events.ndisplay.emit()
+
+    assert overlay.opacity == 1.0
+    assert result.opacity == 1.0
+    assert overlay.blending == "opaque"
+    assert result.colormap.name == "racc-magma-floor-0.050"
+    assert widget.intensity_opacity_spin.isEnabled() is False
+    assert widget.racc_opacity_spin.isEnabled() is False
+
+    viewer.dims.ndisplay = 3
+    viewer.dims.events.ndisplay.emit()
+
+    assert overlay.opacity == 1.0
+    assert result.opacity == 1.0
+    assert np.isclose(overlay._racc_volume_opacity, 0.8)
+    assert overlay.blending == "translucent"
+    assert result.colormap.name == "racc-magma-volume-0.350-s3.00-floor-0.050"
     assert widget.intensity_opacity_spin.isEnabled() is True
     assert widget.racc_opacity_spin.isEnabled() is True
-    assert widget.background_suppression_spin.isEnabled() is False
+    assert overlay.data is original_overlay_data
+    assert result.data is original_result_data
+    assert set_data_events == []
 
 
 def test_widget_racc_floor_changes_display_without_mutating_result(qtbot):
@@ -574,7 +745,7 @@ def test_widget_racc_floor_changes_display_without_mutating_result(qtbot):
             _image("ch2", shape=(2, 1, 2)),
             result,
             Image(
-                np.zeros((1, 2), dtype=np.float32),
+                np.array([[0.5, 0.8]], dtype=np.float32),
                 name="RACC: ch1 x ch2 MIP",
                 metadata={"napari_racc_kind": "mip", "racc_mip_kind": "racc"},
             ),
@@ -592,7 +763,11 @@ def test_widget_racc_floor_changes_display_without_mutating_result(qtbot):
     assert result.colormap.map([0.8])[0, 3] > 0.0
     np.testing.assert_allclose(
         viewer.layers["RACC: ch1 x ch2 MIP"].data,
-        [[0.0, 0.8]],
+        [[0.5, 0.8]],
+    )
+    assert (
+        viewer.layers["RACC: ch1 x ch2 MIP"].colormap.map([0.5])[0, 3]
+        == 0.0
     )
 
 
@@ -675,9 +850,9 @@ def test_widget_display_transfer_handles_napari_thumbnail_failure(qtbot, monkeyp
 
     widget.racc_opacity_spin.setValue(94)
 
-    assert result.colormap.name == (
-        "racc-magma-volume-0.940-s2.00-floor-0.050"
-    )
+    assert result.colormap.name == "racc-magma-volume-0.940-s2.00-floor-0.050"
+    assert result.opacity == 1.0
+    assert thumbnail_calls == 0
 
 
 def test_widget_exports_racc_result_as_tiff(qtbot, tmp_path):
@@ -832,8 +1007,9 @@ def test_widget_live_result_refreshes_existing_mips(qtbot):
         )
     )
 
-    expected_mip = np.zeros((3, 4), dtype=np.float32)
-    expected_mip[1, 2] = 0.8
-    expected_mip[2, 3] = 0.6
+    expected_mip = new_index.max(axis=0)
     np.testing.assert_allclose(viewer.layers["RACC: ch1 x ch2 MIP"].data, expected_mip)
+    result_mip_colormap = viewer.layers["RACC: ch1 x ch2 MIP"].colormap
+    assert result_mip_colormap.map([0.4])[0, 3] == 0.0
+    assert result_mip_colormap.map([0.8])[0, 3] > 0.0
     np.testing.assert_array_equal(result_layer.data, new_index)

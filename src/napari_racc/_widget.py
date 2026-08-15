@@ -40,7 +40,6 @@ from napari_racc._colormaps import (
     racc_colormap_name,
     racc_display_contrast_limits,
 )
-from napari_racc._napari_compat import guard_empty_translucent_ray
 from napari_racc._racc import (
     CostesThresholds,
     RaccError,
@@ -51,16 +50,15 @@ from napari_racc._racc import (
 from napari_racc._scatter import ScatterHistogramWidget
 from napari_racc._views import (
     DEFAULT_VOLUME_RENDERING,
-    _set_layer_opacity_for_rendering,
-    ensure_volume_rendering,
+    compute_overlay_rgb,
+    configure_overlay_display,
+    configure_racc_display,
     normalize_volume_rendering,
-    racc_colormap_for_layer,
     show_mips,
     show_overlay,
     show_racc_only,
     show_side_by_side,
     update_mips,
-    update_raw_overlay_volume,
 )
 
 if TYPE_CHECKING:
@@ -86,6 +84,20 @@ class _ComputeRequest:
     include_percentile: float
 
 
+@dataclass(frozen=True)
+class _DisplayComputeRequest:
+    job_id: int
+    pair: tuple[str, str]
+    channel_1_data: object
+    channel_2_data: object
+    channel_1_rgb: bool
+    channel_2_rgb: bool
+    display_cutoff_1: float
+    display_cutoff_2: float
+    overlay_color_1: str
+    overlay_color_2: str
+
+
 class RaccWidget(QWidget):
     """Interactive RACC analysis widget."""
 
@@ -98,6 +110,10 @@ class RaccWidget(QWidget):
         self._latest_job_id = 0
         self._worker = None
         self._threshold_worker = None
+        self._display_worker = None
+        self._display_worker_active = False
+        self._pending_display_request: _DisplayComputeRequest | None = None
+        self._latest_display_job_id = 0
         self._costes_pair: tuple[str, str] | None = None
 
         self.channel_1_combo = QComboBox()
@@ -190,23 +206,24 @@ class RaccWidget(QWidget):
             self.intensity_opacity_spin,
         ):
             control.setToolTip(
-                "Set the intensity overlay opacity. At 100, the strongest "
-                "retained voxels can be fully opaque."
+                "Set the 3D intensity-volume opacity. At 100, the strongest "
+                "retained voxels can be fully opaque. This is ignored in 2D."
             )
         for control in (
             self.racc_opacity_slider,
             self.racc_opacity_spin,
         ):
             control.setToolTip(
-                "Set the RACC result opacity. At 100, the strongest retained "
-                "voxels can be fully opaque."
+                "Set the 3D RACC-volume opacity. At 100, the strongest retained "
+                "voxels can be fully opaque. This is ignored in 2D."
             )
         for control in (
             self.background_suppression_slider,
             self.background_suppression_spin,
         ):
             control.setToolTip(
-                "Higher values make weak retained signals more transparent."
+                "In 3D translucent/additive rendering, higher values make "
+                "weak retained signals more transparent. This is ignored in 2D."
             )
         self.channel_1_color_combo = QComboBox()
         self.channel_1_color_combo.addItems(overlay_color_choices())
@@ -246,6 +263,16 @@ class RaccWidget(QWidget):
         self._debounce_timer.setInterval(250)
         self._debounce_timer.setSingleShot(True)
         self._debounce_timer.timeout.connect(self.run_racc)
+
+        # Rebuilding a combined color/signal volume is the one display operation
+        # still has to touch every voxel.  Coalesce slider/colour edits so a
+        # drag produces one update instead of a queue of large allocations.
+        self._display_data_timer = QTimer(self)
+        self._display_data_timer.setInterval(200)
+        self._display_data_timer.setSingleShot(True)
+        self._display_data_timer.timeout.connect(
+            self._start_expensive_display_refresh
+        )
 
         self._build_layout()
         self._connect_signals()
@@ -324,71 +351,81 @@ class RaccWidget(QWidget):
         scale_layout.addWidget(self.bounding_box_checkbox, 2, 0, 1, 3)
         root.addWidget(scale_group)
 
-        display_group = QGroupBox("Volume display")
-        display_layout = QGridLayout(display_group)
-        display_layout.addWidget(QLabel("3D rendering"), 0, 0)
-        display_layout.addWidget(self.rendering_combo, 0, 1, 1, 2)
-        display_layout.addWidget(
+        mapping_group = QGroupBox("Display mapping")
+        mapping_layout = QGridLayout(mapping_group)
+        mapping_layout.addWidget(
             self.link_display_cutoffs_checkbox,
-            1,
+            0,
             0,
             1,
             3,
         )
         self._add_labeled_control(
-            display_layout,
-            2,
+            mapping_layout,
+            1,
             "Channel 1 display cutoff",
             self.display_cutoff_1_slider,
             self.display_cutoff_1_spin,
         )
         self._add_labeled_control(
-            display_layout,
-            3,
+            mapping_layout,
+            2,
             "Channel 2 display cutoff",
             self.display_cutoff_2_slider,
             self.display_cutoff_2_spin,
         )
         self._add_labeled_control(
-            display_layout,
-            4,
+            mapping_layout,
+            3,
             "RACC display minimum",
             self.racc_display_floor_slider,
             self.racc_display_floor_spin,
         )
+        mapping_layout.addWidget(QLabel("Channel 1 color"), 4, 0)
+        mapping_layout.addWidget(self.channel_1_color_combo, 4, 1, 1, 2)
+        mapping_layout.addWidget(QLabel("Channel 2 color"), 5, 0)
+        mapping_layout.addWidget(self.channel_2_color_combo, 5, 1, 1, 2)
+        mapping_layout.addWidget(QLabel("RACC colormap"), 6, 0)
+        mapping_layout.addWidget(self.colormap_combo, 6, 1, 1, 2)
+        mapping_note = QLabel(
+            "Cutoffs, colors, and the RACC minimum apply in both 2D and 3D."
+        )
+        mapping_note.setWordWrap(True)
+        mapping_layout.addWidget(mapping_note, 7, 0, 1, 3)
+        root.addWidget(mapping_group)
+
+        volume_group = QGroupBox("3D volume rendering")
+        volume_layout = QGridLayout(volume_group)
+        volume_layout.addWidget(QLabel("Rendering method"), 0, 0)
+        volume_layout.addWidget(self.rendering_combo, 0, 1, 1, 2)
         self._add_labeled_control(
-            display_layout,
-            5,
+            volume_layout,
+            1,
             "Intensity opacity",
             self.intensity_opacity_slider,
             self.intensity_opacity_spin,
         )
         self._add_labeled_control(
-            display_layout,
-            6,
+            volume_layout,
+            2,
             "RACC opacity",
             self.racc_opacity_slider,
             self.racc_opacity_spin,
         )
         self._add_labeled_control(
-            display_layout,
-            7,
+            volume_layout,
+            3,
             "Background suppression",
             self.background_suppression_slider,
             self.background_suppression_spin,
         )
-        display_layout.addWidget(QLabel("Channel 1 color"), 8, 0)
-        display_layout.addWidget(self.channel_1_color_combo, 8, 1, 1, 2)
-        display_layout.addWidget(QLabel("Channel 2 color"), 9, 0)
-        display_layout.addWidget(self.channel_2_color_combo, 9, 1, 1, 2)
-        display_layout.addWidget(QLabel("RACC colormap"), 10, 0)
-        display_layout.addWidget(self.colormap_combo, 10, 1, 1, 2)
-        display_note = QLabel(
-            "Display settings do not change the RACC calculation or exported data."
+        volume_note = QLabel(
+            "These controls affect 3D volumes only. 2D slices and 2D Z-MIPs "
+            "show retained pixels at full opacity."
         )
-        display_note.setWordWrap(True)
-        display_layout.addWidget(display_note, 11, 0, 1, 3)
-        root.addWidget(display_group)
+        volume_note.setWordWrap(True)
+        volume_layout.addWidget(volume_note, 4, 0, 1, 3)
+        root.addWidget(volume_group)
 
         option_row = QHBoxLayout()
         option_row.addWidget(self.live_checkbox)
@@ -454,7 +491,13 @@ class RaccWidget(QWidget):
         self.threshold_1_spin.valueChanged.connect(
             self._sync_linked_display_cutoffs
         )
+        self.threshold_1_slider.valueChanged.connect(
+            self._sync_linked_display_cutoffs
+        )
         self.threshold_2_spin.valueChanged.connect(
+            self._sync_linked_display_cutoffs
+        )
+        self.threshold_2_slider.valueChanged.connect(
             self._sync_linked_display_cutoffs
         )
 
@@ -466,13 +509,20 @@ class RaccWidget(QWidget):
             self._apply_bounding_box_visibility
         )
         self.link_display_cutoffs_checkbox.toggled.connect(self._apply_cutoff_link)
-        display_controls = (
+        expensive_display_controls = (
             self.display_cutoff_1_slider,
             self.display_cutoff_1_spin,
             self.display_cutoff_2_slider,
             self.display_cutoff_2_spin,
-            self.racc_display_floor_slider,
-            self.racc_display_floor_spin,
+        )
+        for control in expensive_display_controls:
+            control.valueChanged.connect(self._schedule_expensive_display_refresh)
+        # Prevent a drag over a large stack from requesting one full-volume
+        # rebuild per pixel of slider movement.
+        self.display_cutoff_1_slider.setTracking(False)
+        self.display_cutoff_2_slider.setTracking(False)
+
+        volume_style_controls = (
             self.intensity_opacity_slider,
             self.intensity_opacity_spin,
             self.racc_opacity_slider,
@@ -480,19 +530,28 @@ class RaccWidget(QWidget):
             self.background_suppression_slider,
             self.background_suppression_spin,
         )
-        for control in display_controls:
-            control.valueChanged.connect(self._apply_display_settings)
-        self.rendering_combo.currentTextChanged.connect(self._apply_display_settings)
+        for control in volume_style_controls:
+            control.valueChanged.connect(self._apply_volume_display_style)
+        for control in (
+            self.racc_display_floor_slider,
+            self.racc_display_floor_spin,
+        ):
+            control.valueChanged.connect(self._apply_racc_display_style)
+        self.rendering_combo.currentTextChanged.connect(
+            self._apply_volume_display_style
+        )
         self.rendering_combo.currentTextChanged.connect(
             self._update_display_control_availability
         )
         self.channel_1_color_combo.currentTextChanged.connect(
-            self._apply_display_settings
+            self._schedule_expensive_display_refresh
         )
         self.channel_2_color_combo.currentTextChanged.connect(
-            self._apply_display_settings
+            self._schedule_expensive_display_refresh
         )
-        self.colormap_combo.currentTextChanged.connect(self._apply_display_settings)
+        self.colormap_combo.currentTextChanged.connect(
+            self._apply_racc_display_style
+        )
         self.percentile_fill_checkbox.toggled.connect(
             self.scatter_widget.set_show_percentile_fill
         )
@@ -515,7 +574,7 @@ class RaccWidget(QWidget):
 
         dims_events = getattr(getattr(self.viewer, "dims", None), "events", None)
         if dims_events is not None and hasattr(dims_events, "ndisplay"):
-            dims_events.ndisplay.connect(self._apply_bounding_box_visibility)
+            dims_events.ndisplay.connect(self._handle_ndisplay_change)
 
     def _refresh_layer_choices(self, event=None) -> None:
         current_1 = self.channel_1_combo.currentText()
@@ -559,8 +618,18 @@ class RaccWidget(QWidget):
         spin = QSpinBox()
         spin.setRange(minimum, maximum)
         spin.setValue(value)
-        slider.valueChanged.connect(spin.setValue)
-        spin.valueChanged.connect(slider.setValue)
+        def update_spin(raw_value: int) -> None:
+            if spin.value() != raw_value:
+                with QSignalBlocker(spin):
+                    spin.setValue(raw_value)
+
+        def update_slider(control_value: int) -> None:
+            if slider.value() != control_value:
+                with QSignalBlocker(slider):
+                    slider.setValue(control_value)
+
+        slider.valueChanged.connect(update_spin)
+        spin.valueChanged.connect(update_slider)
         return slider, spin
 
     def _make_scale_control(self, value: float) -> tuple[QSlider, QDoubleSpinBox]:
@@ -669,10 +738,28 @@ class RaccWidget(QWidget):
 
         xy_scale = float(self.xy_scale_spin.value())
         z_scale = float(self.z_scale_spin.value())
-        for layer in (channel_1_layer, channel_2_layer, self._result_layer()):
+        result_layer = self._result_layer()
+        pair = (channel_1_layer.name, channel_2_layer.name)
+        volume_layers = [channel_1_layer, channel_2_layer, result_layer]
+        raw_overlay_name = f"RACC overlay volume: {pair[0]} x {pair[1]}"
+        if raw_overlay_name in self.viewer.layers:
+            volume_layers.append(self.viewer.layers[raw_overlay_name])
+        for layer in volume_layers:
             if layer is not None:
-                layer.scale = _scale_tuple_for_layer(layer, xy_scale, z_scale)
-        self._refresh_existing_overlay_volume()
+                _set_layer_scale_without_data_refresh(
+                    layer,
+                    _scale_tuple_for_layer(layer, xy_scale, z_scale),
+                )
+
+        mip_names = [f"RACC overlay MIP: {pair[0]} x {pair[1]}"]
+        if result_layer is not None:
+            mip_names.append(f"{result_layer.name} MIP")
+        for name in mip_names:
+            if name in self.viewer.layers:
+                _set_layer_scale_without_data_refresh(
+                    self.viewer.layers[name],
+                    (xy_scale, xy_scale),
+                )
 
     def _selected_colormap(self) -> str:
         return racc_colormap_name(self.colormap_combo.currentText())
@@ -725,11 +812,9 @@ class RaccWidget(QWidget):
         ):
             control.setEnabled(not linked)
         if linked:
-            self._sync_linked_display_cutoffs()
-        elif refresh:
-            self._apply_display_settings()
+            self._sync_linked_display_cutoffs(refresh=refresh)
 
-    def _sync_linked_display_cutoffs(self, *args) -> None:
+    def _sync_linked_display_cutoffs(self, *args, refresh: bool = True) -> None:
         if not self.link_display_cutoffs_checkbox.isChecked():
             return
         threshold_1, threshold_2 = self._selected_analysis_thresholds()
@@ -749,7 +834,8 @@ class RaccWidget(QWidget):
             self.display_cutoff_1_spin.setValue(int(round(threshold_1)))
             self.display_cutoff_2_slider.setValue(int(round(threshold_2)))
             self.display_cutoff_2_spin.setValue(int(round(threshold_2)))
-        self._apply_display_settings()
+        if refresh:
+            self._schedule_expensive_display_refresh()
 
     def _update_display_control_availability(self, *args) -> None:
         is_3d = False
@@ -762,47 +848,180 @@ class RaccWidget(QWidget):
                 int(layer.ndim) >= 3
                 for layer in (channel_1_layer, channel_2_layer)
             )
-        uses_transfer = is_3d and self._selected_rendering_mode() != "mip"
-        self.rendering_combo.setEnabled(is_3d)
+        ndisplay = int(getattr(getattr(self.viewer, "dims", None), "ndisplay", 3))
+        volume_is_active = is_3d and ndisplay == 3
+        uses_transfer = (
+            volume_is_active and self._selected_rendering_mode() != "mip"
+        )
+        self.rendering_combo.setEnabled(volume_is_active)
+        for control in (
+            self.intensity_opacity_slider,
+            self.intensity_opacity_spin,
+            self.racc_opacity_slider,
+            self.racc_opacity_spin,
+        ):
+            control.setEnabled(volume_is_active)
         for control in (
             self.background_suppression_slider,
             self.background_suppression_spin,
         ):
             control.setEnabled(uses_transfer)
 
-    def _apply_display_settings(self, *args) -> None:
+    def _schedule_expensive_display_refresh(self, *args) -> None:
+        # Invalidate any in-flight mapping immediately; only the most recent
+        # slider/color state is allowed to reach the layer.
+        self._latest_display_job_id += 1
+        self._display_data_timer.start()
+
+    def _start_expensive_display_refresh(self) -> None:
+        """Queue the latest full-volume color mapping outside the GUI thread."""
+
+        try:
+            channel_1_layer, channel_2_layer = self._selected_layers()
+        except RaccError:
+            return
+        result_layer = self._result_layer()
+        pair = (channel_1_layer.name, channel_2_layer.name)
+        overlay_name = f"RACC overlay volume: {pair[0]} x {pair[1]}"
+
+        # Existing MIPs retain cached source projections, so their cutoff and
+        # color mapping can update immediately even while a 3D overlay rebuild
+        # continues in the background.
+        if result_layer is not None:
+            self._refresh_existing_mips(pair, result_layer)
+
+        if overlay_name not in self.viewer.layers:
+            self._apply_volume_display_style()
+            return
+
+        cutoff_1, cutoff_2 = self._selected_display_cutoffs()
+        color_1, color_2 = self._selected_overlay_colors()
+        self._pending_display_request = _DisplayComputeRequest(
+            job_id=self._latest_display_job_id,
+            pair=pair,
+            channel_1_data=channel_1_layer.data,
+            channel_2_data=channel_2_layer.data,
+            channel_1_rgb=bool(getattr(channel_1_layer, "rgb", False)),
+            channel_2_rgb=bool(getattr(channel_2_layer, "rgb", False)),
+            display_cutoff_1=cutoff_1,
+            display_cutoff_2=cutoff_2,
+            overlay_color_1=color_1,
+            overlay_color_2=color_2,
+        )
+        self._launch_pending_display_refresh()
+
+    def _launch_pending_display_refresh(self) -> None:
+        if self._display_worker_active or self._pending_display_request is None:
+            return
+        request = self._pending_display_request
+        self._pending_display_request = None
+        self._display_worker_active = True
+        self._display_worker = create_worker(
+            _compute_display_overlay_job,
+            request,
+            _connect={
+                "returned": self._handle_display_overlay,
+                "errored": self._handle_display_error,
+            },
+            _start_thread=True,
+        )
+
+    def _handle_display_overlay(self, returned) -> None:
+        request, overlay_data = returned
+        job_id = request.job_id
+        pair = request.pair
+        self._display_worker_active = False
+        if job_id == self._latest_display_job_id:
+            try:
+                selected_pair = tuple(layer.name for layer in self._selected_layers())
+            except RaccError:
+                selected_pair = ()
+            overlay_name = f"RACC overlay volume: {pair[0]} x {pair[1]}"
+            if selected_pair == pair and overlay_name in self.viewer.layers:
+                channel_1_layer, channel_2_layer = self._selected_layers()
+                if (
+                    channel_1_layer.data is not request.channel_1_data
+                    or channel_2_layer.data is not request.channel_2_data
+                ):
+                    self._schedule_expensive_display_refresh()
+                    return
+                overlay_layer = self.viewer.layers[overlay_name]
+                overlay_layer.data = overlay_data
+                metadata = dict(overlay_layer.metadata)
+                metadata.update(
+                    {
+                        "display_cutoff_1": request.display_cutoff_1,
+                        "display_cutoff_2": request.display_cutoff_2,
+                    }
+                )
+                overlay_layer.metadata = metadata
+                self._apply_volume_display_style()
+        self._launch_pending_display_refresh()
+
+    def _handle_display_error(self, error: Exception) -> None:
+        self._display_worker_active = False
+        self._set_status(f"Display update failed: {error}")
+        self._launch_pending_display_refresh()
+
+    def _apply_overlay_display_style(self, *args) -> None:
+        try:
+            channel_1_layer, channel_2_layer = self._selected_layers()
+        except RaccError:
+            return
+        raw_overlay_name = (
+            f"RACC overlay volume: {channel_1_layer.name} x {channel_2_layer.name}"
+        )
+        if raw_overlay_name not in self.viewer.layers:
+            return
+        overlay_layer = self.viewer.layers[raw_overlay_name]
+        configure_overlay_display(
+            self.viewer,
+            overlay_layer,
+            intensity_opacity=self._selected_intensity_opacity(),
+            background_suppression=self._selected_background_suppression(),
+            rendering_mode=self._selected_rendering_mode(),
+        )
+
+    def _apply_racc_display_style(self, *args) -> None:
         colormap_name = self._selected_colormap()
         self.scatter_widget.set_colormap(colormap_name)
-        self._refresh_existing_overlay_volume()
         result_layer = self._result_layer()
         if result_layer is not None:
-            _set_layer_colormap(
+            configure_racc_display(
+                self.viewer,
                 result_layer,
-                racc_colormap_for_layer(
-                    result_layer,
-                    colormap_name,
-                    self._selected_racc_display_floor(),
-                    self._selected_racc_opacity(),
-                    self._selected_background_suppression(),
-                    self._selected_rendering_mode(),
-                ),
+                colormap_name=colormap_name,
+                racc_display_floor=self._selected_racc_display_floor(),
+                racc_opacity=self._selected_racc_opacity(),
+                background_suppression=self._selected_background_suppression(),
+                rendering_mode=self._selected_rendering_mode(),
             )
-            _configure_racc_volume_layer(
-                result_layer,
-                self._selected_rendering_mode(),
-                self._selected_racc_opacity(),
-            )
-            ensure_volume_rendering(self.viewer, result_layer)
-            try:
-                channel_1_layer, channel_2_layer = self._selected_layers()
-            except RaccError:
-                pass
-            else:
-                self._refresh_existing_mips(
-                    (channel_1_layer.name, channel_2_layer.name),
-                    result_layer,
+            result_mip_name = f"{result_layer.name} MIP"
+            if result_mip_name in self.viewer.layers:
+                result_mip = self.viewer.layers[result_mip_name]
+                _set_layer_colormap(
+                    result_mip,
+                    racc_colormap(
+                        colormap_name,
+                        self._selected_racc_display_floor(),
+                    ),
                 )
+                if not np.isclose(float(result_mip.opacity), 1.0):
+                    result_mip._opacity = 1.0
+                    result_mip.events.opacity()
         self._update_display_control_availability()
+
+    def _apply_volume_display_style(self, *args) -> None:
+        self._apply_overlay_display_style()
+        self._apply_racc_display_style()
+
+    def _handle_ndisplay_change(self, *args) -> None:
+        self._apply_bounding_box_visibility()
+        self._apply_volume_display_style()
+        self._update_display_control_availability()
+        # napari swaps its ImageNode/VolumeNode after the model event. Reapply
+        # the inexpensive style once the new visual exists.
+        QTimer.singleShot(0, self._apply_volume_display_style)
 
     def _apply_bounding_box_visibility(self, *args) -> None:
         self._set_bounding_box_visibility(force_refresh=False)
@@ -936,23 +1155,6 @@ class RaccWidget(QWidget):
             layer.data = result.index
             layer.metadata = metadata
             layer.scale = self._scale_for_result(pair)
-            _set_layer_contrast_limits(layer, racc_display_contrast_limits())
-            _set_layer_colormap(
-                layer,
-                racc_colormap_for_layer(
-                    layer,
-                    self._selected_colormap(),
-                    self._selected_racc_display_floor(),
-                    self._selected_racc_opacity(),
-                    self._selected_background_suppression(),
-                    self._selected_rendering_mode(),
-                ),
-            )
-            _configure_racc_volume_layer(
-                layer,
-                self._selected_rendering_mode(),
-                self._selected_racc_opacity(),
-            )
         else:
             layer = self.viewer.add_image(
                 result.index,
@@ -968,23 +1170,15 @@ class RaccWidget(QWidget):
                 depiction="volume",
                 rendering=self._selected_rendering_mode(),
             )
-            _set_layer_colormap(
-                layer,
-                racc_colormap_for_layer(
-                    layer,
-                    self._selected_colormap(),
-                    self._selected_racc_display_floor(),
-                    self._selected_racc_opacity(),
-                    self._selected_background_suppression(),
-                    self._selected_rendering_mode(),
-                ),
-            )
-            _configure_racc_volume_layer(
-                layer,
-                self._selected_rendering_mode(),
-                self._selected_racc_opacity(),
-            )
-        ensure_volume_rendering(self.viewer, layer)
+        configure_racc_display(
+            self.viewer,
+            layer,
+            colormap_name=self._selected_colormap(),
+            racc_display_floor=self._selected_racc_display_floor(),
+            racc_opacity=self._selected_racc_opacity(),
+            background_suppression=self._selected_background_suppression(),
+            rendering_mode=self._selected_rendering_mode(),
+        )
         self._result_layer_name = layer.name
         self._result_pair = pair
         self._update_result_actions()
@@ -992,7 +1186,6 @@ class RaccWidget(QWidget):
         self.scatter_widget.set_result(result)
         self.scatter_widget.set_colormap(self._selected_colormap())
         self._refresh_existing_mips(pair, layer)
-        self._refresh_existing_overlay_volume()
         self._apply_bounding_box_visibility()
 
         warnings = " ".join(result.warnings)
@@ -1063,34 +1256,7 @@ class RaccWidget(QWidget):
             display_cutoff_1=self._selected_display_cutoffs()[0],
             display_cutoff_2=self._selected_display_cutoffs()[1],
             racc_display_floor=self._selected_racc_display_floor(),
-            intensity_opacity=self._selected_intensity_opacity(),
-            racc_opacity=self._selected_racc_opacity(),
         )
-
-    def _refresh_existing_overlay_volume(self) -> None:
-        try:
-            channel_1_layer, channel_2_layer = self._selected_layers()
-        except RaccError:
-            return
-
-        raw_overlay_name = (
-            f"RACC overlay volume: {channel_1_layer.name} x {channel_2_layer.name}"
-        )
-        if raw_overlay_name in self.viewer.layers:
-            update_raw_overlay_volume(
-                viewer=self.viewer,
-                channel_1_layer=channel_1_layer,
-                channel_2_layer=channel_2_layer,
-                intensity_opacity=self._selected_intensity_opacity(),
-                display_cutoff_1=self._selected_display_cutoffs()[0],
-                display_cutoff_2=self._selected_display_cutoffs()[1],
-                overlay_color_1=self._selected_overlay_colors()[0],
-                overlay_color_2=self._selected_overlay_colors()[1],
-                background_suppression=(
-                    self._selected_background_suppression()
-                ),
-                rendering_mode=self._selected_rendering_mode(),
-            )
 
     def _show_overlay(self) -> None:
         try:
@@ -1178,8 +1344,6 @@ class RaccWidget(QWidget):
             display_cutoff_1=self._selected_display_cutoffs()[0],
             display_cutoff_2=self._selected_display_cutoffs()[1],
             racc_display_floor=self._selected_racc_display_floor(),
-            intensity_opacity=self._selected_intensity_opacity(),
-            racc_opacity=self._selected_racc_opacity(),
         )
         self._refresh_bounding_box_after_view_change()
 
@@ -1273,29 +1437,26 @@ def _compute_costes_thresholds_job(
     return compute_costes_thresholds(ch1, ch2)
 
 
+def _compute_display_overlay_job(request: _DisplayComputeRequest):
+    data = compute_overlay_rgb(
+        request.channel_1_data,
+        request.channel_2_data,
+        channel_1_rgb=request.channel_1_rgb,
+        channel_2_rgb=request.channel_2_rgb,
+        display_cutoff_1=request.display_cutoff_1,
+        display_cutoff_2=request.display_cutoff_2,
+        overlay_color_1=request.overlay_color_1,
+        overlay_color_2=request.overlay_color_2,
+    )
+    return request, data
+
+
 def _set_layer_colormap(layer, colormap) -> None:
-    try:
-        layer.colormap = colormap
-    except RuntimeError as error:
-        if "sequence argument must have length equal to input rank" not in str(error):
-            raise
-        layer._colormap = ensure_colormap(colormap)
-        layer.events.colormap()
-
-
-def _set_layer_contrast_limits(layer, contrast_limits) -> None:
-    try:
-        layer.contrast_limits = contrast_limits
-    except RuntimeError as error:
-        if "sequence argument must have length equal to input rank" not in str(error):
-            raise
-        layer._contrast_limits = contrast_limits
-        current_range = list(layer.contrast_limits_range)
-        layer._contrast_limits_range = [
-            min(current_range[0], contrast_limits[0]),
-            max(current_range[1], contrast_limits[1]),
-        ]
-        layer.events.contrast_limits()
+    selected = ensure_colormap(colormap)
+    if getattr(getattr(layer, "colormap", None), "name", None) == selected.name:
+        return
+    layer._colormap = selected
+    layer.events.colormap()
 
 
 def _result_name(pair: tuple[str, str]) -> str:
@@ -1366,25 +1527,6 @@ def _is_racc_generated_layer(layer) -> bool:
     return layer.metadata.get("napari_racc_kind") in {"result", "mip", "overlay"}
 
 
-def _configure_racc_volume_layer(
-    layer,
-    rendering_mode: str = DEFAULT_VOLUME_RENDERING,
-    racc_opacity: float = 1.0,
-) -> None:
-    _set_layer_contrast_limits(layer, racc_display_contrast_limits())
-    racc_opacity = float(np.clip(racc_opacity, 0.0, 1.0))
-    if int(layer.ndim) < 3:
-        _set_layer_opacity_for_rendering(layer, racc_opacity, rendering_mode)
-        return
-    rendering_mode = normalize_volume_rendering(rendering_mode)
-    if rendering_mode == "translucent":
-        guard_empty_translucent_ray(layer)
-    layer.depiction = "volume"
-    layer.rendering = rendering_mode
-    layer.blending = "translucent"
-    _set_layer_opacity_for_rendering(layer, racc_opacity, rendering_mode)
-
-
 def _slider_to_scale(raw_value: int) -> float:
     return max(raw_value / 100.0, 0.01)
 
@@ -1400,3 +1542,16 @@ def _scale_tuple_for_layer(layer, xy_scale: float, z_scale: float) -> tuple[floa
     if ndim == 2:
         return (xy_scale, xy_scale)
     return (*([1.0] * (ndim - 3)), z_scale, xy_scale, xy_scale)
+
+
+def _set_layer_scale_without_data_refresh(layer, scale: tuple[float, ...]) -> None:
+    """Update the transform without reslicing or re-uploading image data."""
+
+    if tuple(float(value) for value in layer.scale) == tuple(scale):
+        return
+    block_refresh = getattr(layer, "_block_refresh", None)
+    if callable(block_refresh):
+        with block_refresh():
+            layer.scale = scale
+        return
+    layer.scale = scale

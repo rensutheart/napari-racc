@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.1 - 2026-08-15
+
+- Made XY/Z scale changes transform-only, avoiding volume reconstruction and
+  GPU texture re-upload on every slider step.
+- Moved expensive cutoff/color remapping to a debounced background worker and
+  reduced generated overlay volumes from float RGBA to compact uint8 RGBA.
+- Made renderer, opacity, suppression, RACC-floor, and colormap edits update
+  display state without replacing voxel data.
+- Preserved the brighter per-voxel opacity accumulation for translucent and
+  additive 3D rendering through shader/colormap transfer settings.
+- Separated 3D volume opacity/suppression from single-slice and fixed 2D Z-MIP
+  views, which now render retained pixels at full strength.
+
 ## 0.3.0 - 2026-07-21
 
 - Added linked or independent display cutoffs for the two intensity channels.

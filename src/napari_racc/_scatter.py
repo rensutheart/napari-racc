@@ -31,7 +31,10 @@ class ScatterHistogramWidget(QWidget):
         self.update()
 
     def set_colormap(self, colormap_name: str) -> None:
-        self._colormap_name = racc_colormap_name(colormap_name)
+        selected = racc_colormap_name(colormap_name)
+        if selected == self._colormap_name:
+            return
+        self._colormap_name = selected
         if self._result is not None:
             self._image = self._make_image(self._result.scatter_histogram)
         self.update()
