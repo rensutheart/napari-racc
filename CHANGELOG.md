@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-11-04
 
 - Improved scatter histogram contrast for images with large empty backgrounds,
   without altering histogram counts or the RACC calculation.

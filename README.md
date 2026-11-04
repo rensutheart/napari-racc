@@ -116,7 +116,7 @@ python scripts/launch_racc_examples.py --example 3d --demo
 
 This loads a small, explicitly labelled synthetic example, calculates RACC,
 and opens the side-by-side comparison with Appearance selected. It uses no
-local legacy sample files. See [the demonstration guide](docs/DEMO_GUIDE.md)
+local legacy sample files. See [the demonstration guide](https://github.com/rensutheart/napari-racc/blob/main/docs/DEMO_GUIDE.md)
 for a five-minute walkthrough and technical discussion points.
 
 Do not launch the napari viewer with `QT_QPA_PLATFORM=offscreen`; napari needs a
