@@ -93,6 +93,41 @@ def make_sample_data_3d():
     ]
 
 
+def make_demo_data_2d():
+    """Return a deterministic synthetic demo, independent of local files."""
+
+    return _demo_layers(*_synthetic_2d_example(), dimensionality="2D")
+
+
+def make_demo_data_3d():
+    """Return two complete synthetic spheres for a compact, portable demo."""
+
+    z, y, x = np.indices((64, 128, 128), dtype=np.float32)
+    red = _soft_sphere(z, y, x, center=(32, 64, 54), radius=28)
+    green = _soft_sphere(z, y, x, center=(32, 64, 74), radius=28)
+    return _demo_layers(red, green, dimensionality="3D")
+
+
+def _demo_layers(red, green, *, dimensionality: str):
+    layers = []
+    for number, data, color in ((1, red, "red"), (2, green, "green")):
+        kwargs = {
+            "name": f"Demo channel {number} - synthetic {dimensionality}",
+            "colormap": color,
+            "blending": "additive",
+            "contrast_limits": (0, 255),
+            "metadata": {
+                "napari_racc_demo": True,
+                "sample_type": "synthetic",
+                "description": "Illustrative overlapping intensity gradients.",
+            },
+        }
+        if data.ndim == 3:
+            kwargs.update(depiction="volume", rendering="translucent")
+        layers.append((data, kwargs, "image"))
+    return layers
+
+
 def _synthetic_2d_example() -> tuple[np.ndarray, np.ndarray]:
     y, x = np.indices((256, 256), dtype=np.float32)
     red = _soft_disk(y, x, center=(128, 112), radius=72)

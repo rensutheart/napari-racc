@@ -1188,11 +1188,38 @@ def _apply_scalar_volume_shader(viewer, layer) -> bool:
     return True
 
 
-def _vispy_layer_for(viewer, layer):
+def _qt_viewer_for(viewer):
     window = getattr(viewer, "window", None)
     qt_viewer = getattr(window, "_qt_viewer", None)
     if qt_viewer is None:
         qt_viewer = getattr(window, "qt_viewer", None)
+    return qt_viewer
+
+
+def refresh_bounding_box_clipping(viewer, layer) -> None:
+    """Reinherit the current viewport's clipper after a grid-view change.
+
+    Vispy reparents the volume when napari changes viewports, but its child
+    bounding-box visual can retain the previous grid cell's clipping filter.
+    Reattach just that visual so its lines/markers inherit the current scene.
+    """
+
+    canvas = getattr(_qt_viewer_for(viewer), "canvas", None)
+    overlay_map = getattr(canvas, "_layer_overlay_to_visual", {})
+    overlays = overlay_map.get(layer, {})
+    visual = overlays.get(getattr(layer, "bounding_box", None))
+    node = getattr(visual, "node", None)
+    parent = getattr(node, "parent", None)
+    if parent is None:
+        return
+    transform = node.transform
+    node.parent = None
+    node.parent = parent
+    node.transform = transform
+
+
+def _vispy_layer_for(viewer, layer):
+    qt_viewer = _qt_viewer_for(viewer)
     layer_to_visual = getattr(qt_viewer, "layer_to_visual", None)
     if layer_to_visual is None:
         return None

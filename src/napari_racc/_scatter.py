@@ -24,6 +24,11 @@ class ScatterHistogramWidget(QWidget):
         self._x_label = "Channel 1 intensity"
         self._y_label = "Channel 2 intensity"
         self._show_percentile_fill = False
+        self.setToolTip(
+            "Colour shows log-scaled voxel counts. Automatic display contrast "
+            "excludes the lowest-intensity background bin; histogram counts "
+            "and the RACC calculation are unchanged."
+        )
 
     def set_result(self, result: RaccResult | None) -> None:
         self._result = result
@@ -76,7 +81,12 @@ class ScatterHistogramWidget(QWidget):
             values = np.zeros((256, 256), dtype=np.float32)
         else:
             values = np.log1p(hist.T)
-            values = values / values.max()
+            # A large empty background accumulates in the (0, 0) bin. It must
+            # not make the occupied intensity distribution almost invisible.
+            contrast_values = values.copy()
+            contrast_values[0, 0] = 0.0
+            ceiling = float(contrast_values.max()) or float(values.max())
+            values = np.clip(values / ceiling, 0.0, 1.0)
             values = np.flipud(values).astype(np.float32)
         image_rgb = self._map_colormap(values)
         height, width, _channels = image_rgb.shape

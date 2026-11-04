@@ -16,6 +16,7 @@ from napari_racc._views import (
     configure_overlay_display,
     configure_racc_display,
     racc_colormap_for_layer,
+    refresh_bounding_box_clipping,
     show_mips,
     show_overlay,
     show_racc_only,
@@ -64,6 +65,39 @@ class _Viewer:
 
     def reset_view(self, *, margin=0.05):
         self.reset_view_margin = margin
+
+
+def test_bounding_box_clipping_follows_reparented_volume_without_data_refresh():
+    from napari._vispy.visuals.bounding_box import BoundingBox
+    from vispy.scene.visuals import Volume
+    from vispy.scene.widgets import ViewBox
+
+    layer = Image(np.ones((2, 3, 4), dtype=np.float32), name="result")
+    single = ViewBox()
+    left = ViewBox()
+    right = ViewBox()
+    volume = Volume(layer.data, parent=single.scene)
+    box = BoundingBox(parent=volume)
+    original_transform = box.transform
+    original_data = layer.data
+    set_data_events = []
+    layer.events.set_data.connect(set_data_events.append)
+    canvas = SimpleNamespace(_layer_overlay_to_visual={
+        layer: {layer.bounding_box: SimpleNamespace(node=box)},
+    })
+    viewer = SimpleNamespace(window=SimpleNamespace(
+        _qt_viewer=SimpleNamespace(canvas=canvas),
+    ))
+
+    for scene in (left.scene, single.scene, right.scene, single.scene):
+        volume.parent = scene
+        refresh_bounding_box_clipping(viewer, layer)
+        assert box.parent is volume
+        assert box.transform is original_transform
+        assert set(box._clippers) == {scene}
+        assert box._clippers[scene] is scene.clipper
+        assert layer.data is original_data
+    assert not set_data_events
 
 
 def test_show_mips_creates_flat_overlay_and_racc_layers():

@@ -51,6 +51,43 @@ def test_scatter_plot_area_is_square(qtbot):
     assert plot_rect.width() == plot_rect.height()
 
 
+def test_scatter_contrast_is_independent_of_empty_background_size(qtbot):
+    widget = ScatterHistogramWidget()
+    qtbot.addWidget(widget)
+    hist = np.zeros((256, 256), dtype=np.float32)
+    occupied = [(80, 120, 8), (90, 130, 64), (100, 140, 512)]
+    for x, y, count in occupied:
+        hist[x, y] = count
+    baseline = widget._make_image(hist)
+    hist[0, 0] = 1_000_000
+    original = hist.copy()
+    with_background = widget._make_image(hist)
+
+    for x, y, _count in occupied:
+        assert baseline.pixelColor(x, 255 - y) == with_background.pixelColor(
+            x, 255 - y
+        )
+    assert with_background.pixelColor(80, 255 - 120) != with_background.pixelColor(
+        0, 0
+    )
+    np.testing.assert_array_equal(hist, original)
+
+
+def test_scatter_background_only_and_empty_histograms_render_safely(qtbot):
+    widget = ScatterHistogramWidget()
+    qtbot.addWidget(widget)
+    empty = np.zeros((256, 256), dtype=np.float32)
+    background = empty.copy()
+    background[0, 0] = 1_000_000
+
+    empty_image = widget._make_image(empty)
+    background_image = widget._make_image(background)
+    assert not empty_image.isNull()
+    assert not background_image.isNull()
+    assert background_image.pixelColor(0, 0) == empty_image.pixelColor(0, 0)
+    assert background_image.pixelColor(0, 255) != empty_image.pixelColor(0, 255)
+
+
 def test_scatter_plot_area_leaves_room_for_axis_values(qtbot):
     widget = ScatterHistogramWidget()
     qtbot.addWidget(widget)

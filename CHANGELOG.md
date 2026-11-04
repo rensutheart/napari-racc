@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- Improved scatter histogram contrast for images with large empty backgrounds,
+  without altering histogram counts or the RACC calculation.
+- Added individual reset buttons beside the XY and Z scale fields to restore
+  the default display scale of 1.00.
+- Fixed bounding boxes retaining an old grid-cell clipping filter when switching
+  between single and side-by-side views.
+- Labelled view actions with their destination dimensionality and explained
+  fixed Z maximum-intensity projections beside the projection action.
+- Enlarged the Analysis/Appearance tabs, clarified view labels, and added
+  theme-aware spacing, expandable rows, and a more prominent calculation action.
+- Separated Analysis and Appearance settings, with optional method controls,
+  diagnostics, visibility filters, colors, and geometry in expandable sections.
+- Kept calculation, status, comparison, and export actions visible while
+  scrolling, and disabled result views until the selected channels have a result.
+- Clarified working-scale threshold units and the meaning of the overlap
+  voxel fraction, and prevented previous-input workers updating current results.
+- Added a prepared `--demo` launch with complete, deterministic synthetic
+  spheres and a five-minute presentation guide.
+
 ## 0.3.1 - 2026-08-15
 
 - Made XY/Z scale changes transform-only, avoiding volume reconstruction and

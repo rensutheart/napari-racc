@@ -65,21 +65,27 @@ source .venv/bin/activate.fish
 1. Open napari.
 2. Open two image stacks or use `File > Open Sample > RACC`.
 3. Start the widget from `Plugins > RACC (napari-racc)`.
-4. Select channel 1 and channel 2.
-5. Adjust thresholds manually or press `Costes thresholds`.
+4. On **Analysis**, select channel 1 and channel 2.
+5. Adjust the background thresholds or press `Estimate thresholds (Costes)`.
+   Thresholds use the shared 0–255 working intensity scale. Review automatic
+   estimates against the image background.
 6. Press `Run RACC`.
-7. Keep `Link channel cutoffs to analysis thresholds` enabled for a directly
-   comparable intensity view, or disable it to clean up the display without
-   changing the analysis.
-8. Choose `Translucent`, `Maximum intensity (MIP)`, or `Additive` with the
-   `Rendering method` control under `3D volume rendering`; the selection is
-   applied to both the intensity overlay and the RACC volume.
-9. Under `Display mapping`, use the channel cutoffs and RACC display minimum to
-   remove weak haze in both 2D and 3D. Under `3D volume rendering`, set the
-   intensity/RACC opacities and background suppression. Those volume controls
-   are deliberately ignored in single-slice and fixed `2D Z-MIPs` views. None
-   of these display controls changes the calculated or exported RACC values.
-10. Use `Overlay`, `RACC`, `3D side by side`, and `2D Z-MIPs` to switch views.
+7. For volume inputs, use `3D channels`, `3D RACC map`, or `3D side by side`.
+   `2D Z max projection` compares fixed maximum-intensity projections along Z.
+   A short note below the buttons explains this projection. With 2D inputs,
+   the first three buttons are labelled 2D and the Z-projection action is disabled.
+8. On **Appearance**, expand `3D volume rendering` to adjust the rendering method,
+   intensity/RACC opacities,
+   and background suppression. These volume controls apply only to 3D views;
+   slices and fixed Z-projections show retained pixels at full opacity.
+9. Expand `Visibility filters` for channel cutoffs and the RACC minimum.
+   Leave `Link channel cutoffs to analysis thresholds` enabled for a directly
+   comparable intensity view, or disable it to set display-only cutoffs.
+   Expand `Colors` or `Scale & bounding box` for other appearance controls.
+   Appearance settings do not change the calculated or exported RACC values.
+10. On Analysis, expand `Advanced method settings` for theta and percentile,
+    or `Analysis diagnostics` for the scatter plot. `Update automatically`
+    controls recalculation after analysis edits.
 11. Press `Export RACC TIFF` to save the numeric RACC result stack for use in
     other software.
 
@@ -101,6 +107,17 @@ Launch one example dimensionality at a time:
 python scripts/launch_racc_examples.py --example 3d
 python scripts/launch_racc_examples.py --example 2d
 ```
+
+For a prepared presentation example, use:
+
+```bash
+python scripts/launch_racc_examples.py --example 3d --demo
+```
+
+This loads a small, explicitly labelled synthetic example, calculates RACC,
+and opens the side-by-side comparison with Appearance selected. It uses no
+local legacy sample files. See [the demonstration guide](docs/DEMO_GUIDE.md)
+for a five-minute walkthrough and technical discussion points.
 
 Do not launch the napari viewer with `QT_QPA_PLATFORM=offscreen`; napari needs a
 real Qt/OpenGL context for the viewer on macOS.

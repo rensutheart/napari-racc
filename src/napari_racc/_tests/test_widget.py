@@ -135,6 +135,119 @@ def test_input_combos_expand_and_expose_full_layer_names(qtbot):
     assert widget.channel_1_combo.itemData(0, Qt.ToolTipRole) == long_name
 
 
+def test_settings_disclosure_and_tabs_preserve_analysis_state(qtbot):
+    widget = RaccWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.live_checkbox.setChecked(False)
+    widget.resize(460, 720)
+    widget.show()
+
+    assert widget.settings_tabs.tabText(0) == "Analysis"
+    assert widget.settings_tabs.tabText(1) == "Appearance"
+    assert widget.threshold_1_spin.isVisible()
+    assert not widget.theta_spin.isVisible()
+    assert not widget.scatter_widget.isVisible()
+    widget.method_section.toggle.click()
+    widget.theta_spin.setValue(37)
+    widget.method_section.toggle.click()
+    widget.settings_tabs.setCurrentIndex(1)
+    assert widget.rendering_combo.isVisible()
+    assert not widget.threshold_1_spin.isVisible()
+    widget.settings_tabs.setCurrentIndex(0)
+    widget.method_section.toggle.click()
+    assert widget.theta_spin.value() == 37
+    assert not widget._debounce_timer.isActive()
+
+
+def test_primary_actions_stay_visible_while_settings_scroll(qtbot):
+    widget = RaccWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.resize(460, 620)
+    widget.show()
+    widget.method_section.set_expanded(True)
+    widget.diagnostics_section.set_expanded(True)
+    widget._scroll_area.verticalScrollBar().setValue(10000)
+    for index in (0, 1):
+        widget.settings_tabs.setCurrentIndex(index)
+        for control in (
+            widget.run_button, widget.status_label, widget.overlay_button,
+            widget.side_by_side_button, widget.export_button,
+        ):
+            assert control.isVisible()
+            assert widget.actions_panel.isAncestorOf(control)
+            assert not widget._scroll_area.isAncestorOf(control)
+            assert not widget._appearance_scroll_area.isAncestorOf(control)
+
+
+def test_result_actions_require_result_for_selected_pair(qtbot):
+    viewer = _Viewer([_image("ch1"), _image("ch2"), _image("ch3")])
+    widget = RaccWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.live_checkbox.setChecked(False)
+    assert widget.run_button.isEnabled()
+    assert widget.overlay_button.isEnabled()
+    assert not widget.racc_button.isEnabled()
+    assert not widget.side_by_side_button.isEnabled()
+    assert not widget.mip_button.isEnabled()
+    assert not widget.export_button.isEnabled()
+    viewer.layers.append(_image("RACC: ch1 x ch2"))
+    widget._update_result_actions()
+    assert widget.racc_button.isEnabled()
+    assert widget.side_by_side_button.isEnabled()
+    assert not widget.mip_button.isEnabled()  # These input arrays are 2D.
+    assert widget.export_button.isEnabled()
+    widget.channel_2_combo.setCurrentText("ch3")
+    assert not widget.export_button.isEnabled()
+    assert not widget.side_by_side_button.isEnabled()
+
+
+def test_view_labels_describe_destination_dimensionality_and_projection(qtbot):
+    viewer = _Viewer([
+        _image("ch1", shape=(2, 8, 8)),
+        _image("ch2", shape=(2, 8, 8)),
+        _image("RACC: ch1 x ch2", shape=(2, 8, 8)),
+        _image("flat1"), _image("flat2"),
+    ])
+    widget = RaccWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.live_checkbox.setChecked(False)
+    assert widget.overlay_button.text() == "3D channels"
+    assert widget.racc_button.text() == "3D RACC map"
+    assert widget.side_by_side_button.text() == "3D side by side"
+    assert "2D" in widget.mip_button.text()
+    assert "maximum intensity" in widget.projection_note.text()
+    assert widget.mip_button.isEnabled()
+    # The view actions return these stacks to 3D even from a 2D slice/projection.
+    viewer.dims.ndisplay = 2
+    viewer.dims.events.ndisplay.emit()
+    assert widget.racc_button.text() == "3D RACC map"
+    widget.channel_1_combo.setCurrentText("flat1")
+    widget.channel_2_combo.setCurrentText("flat2")
+    assert widget.overlay_button.text() == "2D channels"
+    assert widget.racc_button.text() == "2D RACC map"
+    assert widget.side_by_side_button.text() == "2D side by side"
+    assert not widget.mip_button.isEnabled()
+
+
+def test_previous_input_worker_cannot_publish_current_result(qtbot):
+    viewer = _Viewer([_image("ch1"), _image("ch2"), _image("ch3")])
+    widget = RaccWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.live_checkbox.setChecked(False)
+    widget._latest_job_id = 1
+    widget._pending_jobs[1] = ("ch1", "ch2")
+    completed = []
+    widget.result_ready.connect(completed.append)
+    widget.channel_2_combo.setCurrentText("ch3")
+    status = widget.status_label.text()
+    # A stale result should be rejected before reading any result content.
+    widget._handle_result((1, object()))
+    assert widget._result_layer() is None
+    assert widget.scatter_widget._result is None
+    assert widget.status_label.text() == status
+    assert not completed
+
+
 def test_widget_ignores_racc_generated_layers_in_input_choices(qtbot):
     viewer = _Viewer(
         [
@@ -524,6 +637,22 @@ def test_widget_scale_change_updates_transforms_without_set_data(qtbot):
         assert tuple(viewer.layers[name].scale) == (2.5, 1.4, 1.4)
     for name in (overlay_mip.name, result_mip.name):
         assert tuple(viewer.layers[name].scale) == (1.4, 1.4)
+
+    widget.xy_scale_reset_button.click()
+    assert widget.xy_scale_spin.value() == 1.0
+    assert widget.xy_scale_slider.value() == 100
+    assert widget.z_scale_spin.value() == 2.5
+    for name in ("ch1", "ch2", result.name, overlay.name):
+        assert tuple(viewer.layers[name].scale) == (2.5, 1.0, 1.0)
+    for name in (overlay_mip.name, result_mip.name):
+        assert tuple(viewer.layers[name].scale) == (1.0, 1.0)
+
+    widget.z_scale_reset_button.click()
+    assert widget.z_scale_spin.value() == 1.0
+    assert widget.z_scale_slider.value() == 100
+    for name in ("ch1", "ch2", result.name, overlay.name):
+        assert tuple(viewer.layers[name].scale) == (1.0, 1.0, 1.0)
+    assert not widget._debounce_timer.isActive()
     assert set_data_events == []
     assert all(viewer.layers[name].data is data for name, data in data_objects.items())
 

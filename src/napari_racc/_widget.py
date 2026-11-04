@@ -12,7 +12,8 @@ import tifffile
 from napari.layers import Image
 from napari.qt.threading import create_worker
 from napari.utils.colormaps import ensure_colormap
-from qtpy.QtCore import QSignalBlocker, Qt, QTimer
+from napari.utils.theme import get_theme, increase
+from qtpy.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -28,6 +29,8 @@ from qtpy.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -54,6 +57,7 @@ from napari_racc._views import (
     configure_overlay_display,
     configure_racc_display,
     normalize_volume_rendering,
+    refresh_bounding_box_clipping,
     show_mips,
     show_overlay,
     show_racc_only,
@@ -68,6 +72,7 @@ DEFAULT_INTENSITY_OPACITY_PERCENT = 25
 DEFAULT_RACC_OPACITY_PERCENT = 25
 DEFAULT_RACC_DISPLAY_FLOOR = 0.05
 DEFAULT_BACKGROUND_SUPPRESSION = 2.0
+DEFAULT_DISPLAY_SCALE = 1.0
 MINIMUM_WIDGET_WIDTH = 430
 RENDERING_LABELS = {
     "Translucent": "translucent",
@@ -98,8 +103,53 @@ class _DisplayComputeRequest:
     overlay_color_2: str
 
 
+class _DisclosureSection(QWidget):
+    """Show optional controls without disabling their current settings."""
+
+    def __init__(self, title: str, body: QWidget):
+        super().__init__()
+        self.body = body
+        self.toggle = QToolButton()
+        self.toggle.setObjectName("raccDisclosure")
+        self.toggle.setText(title)
+        self.toggle.setCheckable(True)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.toggle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.toggle.setMinimumHeight(34)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.toggle)
+        layout.addWidget(body)
+        self.toggle.toggled.connect(self.set_expanded)
+        self.set_expanded(False)
+
+    def set_expanded(self, expanded: bool) -> None:
+        with QSignalBlocker(self.toggle):
+            self.toggle.setChecked(expanded)
+        self.toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self.body.setVisible(expanded)
+
+
+class _SettingsTabs(QTabWidget):
+    """Share the available width between the two main settings tabs."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("raccSettings")
+        self.setDocumentMode(True)
+        self.tabBar().setObjectName("raccSettingsTabs")
+        self.tabBar().setExpanding(True)
+        self.tabBar().setDrawBase(False)
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self.tabBar().setFixedWidth(self.width())
+
+
 class RaccWidget(QWidget):
     """Interactive RACC analysis widget."""
+
+    result_ready = Signal(object)
 
     def __init__(self, viewer: napari.viewer.Viewer, parent=None):
         super().__init__(parent)
@@ -135,8 +185,20 @@ class RaccWidget(QWidget):
         self.percentile_spin.setDecimals(1)
         self.percentile_spin.setValue(99.0)
 
-        self.xy_scale_slider, self.xy_scale_spin = self._make_scale_control(1.0)
-        self.z_scale_slider, self.z_scale_spin = self._make_scale_control(1.0)
+        self.xy_scale_slider, self.xy_scale_spin = self._make_scale_control(
+            DEFAULT_DISPLAY_SCALE
+        )
+        self.z_scale_slider, self.z_scale_spin = self._make_scale_control(
+            DEFAULT_DISPLAY_SCALE
+        )
+        self.xy_scale_reset_button = QPushButton("Reset")
+        self.z_scale_reset_button = QPushButton("Reset")
+        for axis, button in (
+            ("XY", self.xy_scale_reset_button), ("Z", self.z_scale_reset_button)
+        ):
+            button.setToolTip(f"Reset {axis} display scale to 1.00.")
+            button.setAccessibleName(f"Reset {axis} scale")
+            button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.bounding_box_checkbox = QCheckBox("Bounding box")
         self.rendering_combo = QComboBox()
         self.rendering_combo.addItems(RENDERING_LABELS)
@@ -235,23 +297,31 @@ class RaccWidget(QWidget):
         self.colormap_combo.addItems(racc_colormap_choices())
         self.colormap_combo.setCurrentText(racc_colormap_name())
 
-        self.live_checkbox = QCheckBox("Live")
+        self.live_checkbox = QCheckBox("Update automatically")
+        self.live_checkbox.setToolTip(
+            "Recalculate RACC when analysis settings change. Appearance edits "
+            "always update the view independently."
+        )
         self.live_checkbox.setChecked(True)
         self.replace_checkbox = QCheckBox("Update existing result")
         self.replace_checkbox.setChecked(True)
 
-        self.costes_button = QPushButton("Costes thresholds")
+        self.costes_button = QPushButton("Estimate thresholds (Costes)")
+        self.costes_button.setToolTip(
+            "Estimate channel thresholds on the shared 0–255 working scale. "
+            "Review the estimate against your image background."
+        )
         self.run_button = QPushButton("Run RACC")
         self.run_button.setMinimumHeight(40)
-        self.run_button.setStyleSheet(
-            "QPushButton { font-weight: 600; padding: 8px; }"
-        )
+        self.run_button.setObjectName("raccRun")
         self.export_button = QPushButton("Export RACC TIFF")
         self.export_button.setEnabled(False)
-        self.overlay_button = QPushButton("Overlay")
-        self.racc_button = QPushButton("RACC")
-        self.side_by_side_button = QPushButton("3D side by side")
-        self.mip_button = QPushButton("2D Z-MIPs")
+        self.overlay_button = QPushButton("Channel overlay")
+        self.racc_button = QPushButton("RACC map")
+        self.side_by_side_button = QPushButton("Compare side by side")
+        self.mip_button = QPushButton("2D Z-projections")
+        self.overlay_button.setToolTip("Show the two intensity channels together.")
+        self.racc_button.setToolTip("Show the calculated RACC colour map on its own.")
 
         self.status_label = QLabel("Select two image layers.")
         self.status_label.setWordWrap(True)
@@ -275,64 +345,125 @@ class RaccWidget(QWidget):
         )
 
         self._build_layout()
+        self._apply_interface_style()
         self._connect_signals()
         self._refresh_layer_choices()
         self._apply_cutoff_link(refresh=False)
         self._update_display_control_availability()
+        if self.run_button.isEnabled():
+            self._set_status("Ready. Run RACC to calculate the selected channels.")
 
     def _build_layout(self) -> None:
+        self.setObjectName("raccPanel")
         self.setMinimumWidth(MINIMUM_WIDGET_WIDTH)
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
+        self.settings_tabs = _SettingsTabs()
+        outer_layout.addWidget(self.settings_tabs, 1)
+        self._scroll_area, self._content_widget, analysis = self._settings_page()
+        self._appearance_scroll_area, _, appearance = self._settings_page()
+        self.settings_tabs.addTab(self._scroll_area, "Analysis")
+        self.settings_tabs.addTab(self._appearance_scroll_area, "Appearance")
+        analysis.addWidget(self._note(
+            "Choose the inputs and settings used to calculate RACC."
+        ))
 
-        self._scroll_area = QScrollArea()
-        self._scroll_area.setWidgetResizable(True)
-        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        outer_layout.addWidget(self._scroll_area)
-
-        self._content_widget = QWidget()
-        self._scroll_area.setWidget(self._content_widget)
-        root = QVBoxLayout(self._content_widget)
-
-        input_group = QGroupBox("Inputs")
+        input_group = QGroupBox("1. Choose channels")
         input_layout = QFormLayout(input_group)
         input_layout.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
         )
         input_layout.addRow("Channel 1", self.channel_1_combo)
         input_layout.addRow("Channel 2", self.channel_2_combo)
-        root.addWidget(input_group)
+        analysis.addWidget(input_group)
 
-        parameter_group = QGroupBox("RACC parameters")
+        parameter_group = QGroupBox("2. Set background thresholds")
         parameter_layout = QGridLayout(parameter_group)
         self._add_labeled_control(
             parameter_layout,
             0,
-            "Channel 1 analysis threshold",
+            "Channel 1",
             self.threshold_1_slider,
             self.threshold_1_spin,
         )
         self._add_labeled_control(
             parameter_layout,
             1,
-            "Channel 2 analysis threshold",
+            "Channel 2",
             self.threshold_2_slider,
             self.threshold_2_spin,
         )
-        self._add_labeled_control(
-            parameter_layout,
-            2,
-            "Penalization theta",
-            self.theta_slider,
-            self.theta_spin,
+        parameter_layout.addWidget(self.costes_button, 2, 0, 1, 3)
+        threshold_note = self._note(
+            "Shared 0–255 working intensity scale. "
+            "Costes provides an estimate to review against the background."
         )
-        parameter_layout.addWidget(QLabel("Include percentile"), 3, 0)
-        parameter_layout.addWidget(self.percentile_spin, 3, 2)
-        parameter_layout.addWidget(self.costes_button, 4, 0, 1, 3)
-        root.addWidget(parameter_group)
+        threshold_note.setToolTip(
+            "Both channels share one working scale: normalized 0–1 data are "
+            "scaled to 0–255; data above 255 are scaled by their shared maximum. "
+            "Values already within 0–255 are retained."
+        )
+        parameter_layout.addWidget(threshold_note, 3, 0, 1, 3)
+        analysis.addWidget(parameter_group)
 
-        scale_group = QGroupBox("Display scale")
+        method_body = QWidget()
+        method_layout = QGridLayout(method_body)
+        self._add_labeled_control(
+            method_layout, 0, "Penalization angle (θ)",
+            self.theta_slider, self.theta_spin,
+        )
+        method_layout.addWidget(QLabel("Include percentile (%)"), 1, 0)
+        method_layout.addWidget(self.percentile_spin, 1, 2)
+        method_layout.addWidget(self.replace_checkbox, 2, 0, 1, 3)
+        self.method_section = _DisclosureSection(
+            "Advanced method settings", method_body
+        )
+        analysis.addWidget(self.method_section)
+
+        diagnostic_body = QWidget()
+        diagnostic_layout = QVBoxLayout(diagnostic_body)
+        diagnostic_layout.addWidget(self._note(
+            "Channel intensity distribution and regression used by RACC."
+        ))
+        diagnostic_layout.addWidget(self.scatter_widget)
+        diagnostic_layout.addWidget(self.percentile_fill_checkbox)
+        self.diagnostics_section = _DisclosureSection(
+            "Analysis diagnostics", diagnostic_body
+        )
+        analysis.addWidget(self.diagnostics_section)
+        analysis.addStretch(1)
+
+        appearance.addWidget(self._note(
+            "Adjust the view. Calculated and exported values stay the same."
+        ))
+        volume_group = QWidget()
+        volume_layout = QGridLayout(volume_group)
+        volume_layout.addWidget(QLabel("Rendering method"), 0, 0)
+        volume_layout.addWidget(self.rendering_combo, 0, 1, 1, 2)
+        self._add_labeled_control(
+            volume_layout, 1, "Intensity opacity (%)",
+            self.intensity_opacity_slider, self.intensity_opacity_spin,
+        )
+        self._add_labeled_control(
+            volume_layout, 2, "RACC opacity (%)",
+            self.racc_opacity_slider, self.racc_opacity_spin,
+        )
+        self._add_labeled_control(
+            volume_layout, 3, "Background suppression",
+            self.background_suppression_slider, self.background_suppression_spin,
+        )
+        self.volume_note = self._note(
+            "Volume controls apply in 3D. Slices and fixed Z-projections "
+            "show retained pixels at full opacity."
+        )
+        volume_layout.addWidget(self.volume_note, 4, 0, 1, 3)
+        self.volume_section = _DisclosureSection(
+            "3D volume rendering", volume_group
+        )
+        self.volume_section.set_expanded(True)
+        appearance.addWidget(self.volume_section)
+
+        scale_group = QWidget()
         scale_layout = QGridLayout(scale_group)
         self._add_labeled_control(
             scale_layout,
@@ -340,6 +471,7 @@ class RaccWidget(QWidget):
             "XY scale",
             self.xy_scale_slider,
             self.xy_scale_spin,
+            reset_button=self.xy_scale_reset_button,
         )
         self._add_labeled_control(
             scale_layout,
@@ -347,11 +479,11 @@ class RaccWidget(QWidget):
             "Z scale",
             self.z_scale_slider,
             self.z_scale_spin,
+            reset_button=self.z_scale_reset_button,
         )
         scale_layout.addWidget(self.bounding_box_checkbox, 2, 0, 1, 3)
-        root.addWidget(scale_group)
 
-        mapping_group = QGroupBox("Display mapping")
+        mapping_group = QWidget()
         mapping_layout = QGridLayout(mapping_group)
         mapping_layout.addWidget(
             self.link_display_cutoffs_checkbox,
@@ -377,88 +509,141 @@ class RaccWidget(QWidget):
         self._add_labeled_control(
             mapping_layout,
             3,
-            "RACC display minimum",
+            "RACC minimum (0–1)",
             self.racc_display_floor_slider,
             self.racc_display_floor_spin,
         )
-        mapping_layout.addWidget(QLabel("Channel 1 color"), 4, 0)
-        mapping_layout.addWidget(self.channel_1_color_combo, 4, 1, 1, 2)
-        mapping_layout.addWidget(QLabel("Channel 2 color"), 5, 0)
-        mapping_layout.addWidget(self.channel_2_color_combo, 5, 1, 1, 2)
-        mapping_layout.addWidget(QLabel("RACC colormap"), 6, 0)
-        mapping_layout.addWidget(self.colormap_combo, 6, 1, 1, 2)
-        mapping_note = QLabel(
-            "Cutoffs, colors, and the RACC minimum apply in both 2D and 3D."
+        mapping_layout.addWidget(self._note(
+            "Visibility filters apply in both 2D and 3D. "
+            "Channel cutoffs use the shared 0–255 working scale."
+        ), 4, 0, 1, 3)
+        self.visibility_section = _DisclosureSection(
+            "Visibility filters", mapping_group
         )
-        mapping_note.setWordWrap(True)
-        mapping_layout.addWidget(mapping_note, 7, 0, 1, 3)
-        root.addWidget(mapping_group)
+        appearance.addWidget(self.visibility_section)
 
-        volume_group = QGroupBox("3D volume rendering")
-        volume_layout = QGridLayout(volume_group)
-        volume_layout.addWidget(QLabel("Rendering method"), 0, 0)
-        volume_layout.addWidget(self.rendering_combo, 0, 1, 1, 2)
-        self._add_labeled_control(
-            volume_layout,
-            1,
-            "Intensity opacity",
-            self.intensity_opacity_slider,
-            self.intensity_opacity_spin,
+        color_body = QWidget()
+        color_layout = QFormLayout(color_body)
+        color_layout.addRow("Channel 1 color", self.channel_1_color_combo)
+        color_layout.addRow("Channel 2 color", self.channel_2_color_combo)
+        color_layout.addRow("RACC colormap", self.colormap_combo)
+        self.colors_section = _DisclosureSection("Colors", color_body)
+        appearance.addWidget(self.colors_section)
+        self.geometry_section = _DisclosureSection(
+            "Scale && bounding box", scale_group
         )
-        self._add_labeled_control(
-            volume_layout,
-            2,
-            "RACC opacity",
-            self.racc_opacity_slider,
-            self.racc_opacity_spin,
+        appearance.addWidget(self.geometry_section)
+        appearance.addStretch(1)
+
+        # Primary actions stay visible even when a tab is scrolled.
+        self.actions_panel = QWidget()
+        self.actions_panel.setObjectName("raccActions")
+        actions = QVBoxLayout(self.actions_panel)
+        actions.setContentsMargins(12, 16, 12, 10)
+        actions.setSpacing(8)
+        run_row = QHBoxLayout()
+        run_row.addWidget(self.run_button, 1)
+        run_row.addWidget(self.live_checkbox)
+        actions.addLayout(run_row)
+        actions.addWidget(self.status_label)
+        view_group = QGroupBox("Explore result")
+        views = QGridLayout(view_group)
+        views.addWidget(self.overlay_button, 0, 0)
+        views.addWidget(self.racc_button, 0, 1)
+        views.addWidget(self.side_by_side_button, 1, 0)
+        views.addWidget(self.mip_button, 1, 1)
+        self.projection_note = self._note(
+            "Z-projection: maximum intensity along Z (MIP)."
         )
-        self._add_labeled_control(
-            volume_layout,
-            3,
-            "Background suppression",
-            self.background_suppression_slider,
-            self.background_suppression_spin,
-        )
-        volume_note = QLabel(
-            "These controls affect 3D volumes only. 2D slices and 2D Z-MIPs "
-            "show retained pixels at full opacity."
-        )
-        volume_note.setWordWrap(True)
-        volume_layout.addWidget(volume_note, 4, 0, 1, 3)
-        root.addWidget(volume_group)
+        views.addWidget(self.projection_note, 2, 0, 1, 2)
+        actions.addWidget(view_group)
+        actions.addWidget(self.export_button)
+        outer_layout.addWidget(self.actions_panel)
 
-        option_row = QHBoxLayout()
-        option_row.addWidget(self.live_checkbox)
-        option_row.addWidget(self.replace_checkbox)
-        option_row.addStretch(1)
-        root.addLayout(option_row)
+    def _apply_interface_style(self, *args) -> None:
+        """Use napari's current theme for a consistent, scoped control panel."""
 
-        scatter_option_row = QHBoxLayout()
-        scatter_option_row.addWidget(self.percentile_fill_checkbox)
-        scatter_option_row.addStretch(1)
-        root.addLayout(scatter_option_row)
-        root.addWidget(self.scatter_widget)
+        theme = get_theme(getattr(self.viewer, "theme", "dark"))
+        background = theme.background.as_rgb()
+        foreground = theme.foreground.as_rgb()
+        primary = theme.primary.as_rgb()
+        secondary = theme.secondary.as_rgb()
+        text = theme.text.as_rgb()
+        muted = theme.icon.as_rgb()
+        accent = theme.current.as_rgb()
+        section_font_size = increase(theme.font_size, "1")
+        red, green, blue = theme.current.as_rgb_tuple()[:3]
+        accent_luminance = red * 0.299 + green * 0.587 + blue * 0.114
+        accent_text = "#111111" if accent_luminance > 160 else "#ffffff"
+        self.setStyleSheet(f"""
+            QTabWidget#raccSettings::pane {{ border: 0; }}
+            QTabBar#raccSettingsTabs::tab {{
+                min-height: 20px; padding: 11px 12px 3px 12px;
+                margin: 0 2px 0 0;
+                border: 0; border-bottom: 2px solid {foreground};
+                border-top-left-radius: 3px; border-top-right-radius: 3px;
+                background: {foreground}; color: {text};
+                font-weight: normal;
+            }}
+            QTabBar#raccSettingsTabs::tab:selected {{
+                background: {primary}; border-bottom: 2px solid {accent};
+            }}
+            QTabBar#raccSettingsTabs::tab:hover {{ background: {secondary}; }}
+            QWidget#raccPanel QGroupBox {{
+                margin-top: 10px; padding: 12px 10px 10px 10px;
+                border: 1px solid {foreground}; border-radius: 5px;
+            }}
+            QWidget#raccPanel QGroupBox::title {{
+                subcontrol-origin: margin; left: 10px; padding: 0 4px;
+                color: {text}; font-weight: 600;
+            }}
+            QWidget#raccPanel QLabel#raccHint {{ color: {muted}; }}
+            QToolButton#raccDisclosure {{
+                text-align: left; padding: 7px 10px;
+                background: {foreground}; color: {text};
+                border: 1px solid {foreground}; border-radius: 4px;
+                font-size: {section_font_size}; font-weight: normal;
+            }}
+            QToolButton#raccDisclosure:hover {{
+                background: {primary}; border-color: {secondary};
+            }}
+            QToolButton#raccDisclosure:checked {{ border-left: 3px solid {accent}; }}
+            QWidget#raccActions {{ border-top: 2px solid {secondary}; }}
+            QWidget#raccActions QPushButton {{
+                min-height: 20px; padding: 5px 8px; border-radius: 4px;
+            }}
+            QPushButton#raccRun {{
+                background: {accent}; color: {accent_text};
+                font-weight: 600; padding: 8px 12px;
+            }}
+            QPushButton#raccRun:hover {{ border: 1px solid {muted}; }}
+            QPushButton#raccRun:disabled {{
+                background: {foreground}; color: {muted};
+            }}
+            QWidget#raccPanel QPushButton:focus,
+            QToolButton#raccDisclosure:focus {{ border: 1px solid {accent}; }}
+            QWidget#raccPanel QScrollArea {{ background: {background}; border: 0; }}
+        """)
 
-        result_group = QGroupBox("Result")
-        result_layout = QVBoxLayout(result_group)
-        result_layout.addWidget(self.run_button)
-        result_layout.addWidget(self.export_button)
-        root.addWidget(result_group)
+    @staticmethod
+    def _note(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("raccHint")
+        label.setWordWrap(True)
+        return label
 
-        single_view_group = QGroupBox("Single views")
-        single_view_layout = QHBoxLayout(single_view_group)
-        single_view_layout.addWidget(self.overlay_button)
-        single_view_layout.addWidget(self.racc_button)
-        root.addWidget(single_view_group)
-
-        paired_view_group = QGroupBox("Side-by-side views")
-        paired_view_layout = QHBoxLayout(paired_view_group)
-        paired_view_layout.addWidget(self.side_by_side_button)
-        paired_view_layout.addWidget(self.mip_button)
-        root.addWidget(paired_view_group)
-
-        root.addWidget(self.status_label)
-        root.addStretch(1)
+    @staticmethod
+    def _settings_page() -> tuple[QScrollArea, QWidget, QVBoxLayout]:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        content = QWidget()
+        scroll.setWidget(content)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(12, 10, 12, 12)
+        layout.setSpacing(12)
+        return scroll, content, layout
 
     def _configure_layer_combo(self, combo: QComboBox) -> None:
         combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -469,8 +654,11 @@ class RaccWidget(QWidget):
         combo.currentTextChanged.connect(combo.setToolTip)
 
     def _connect_signals(self) -> None:
+        theme_event = getattr(getattr(self.viewer, "events", None), "theme", None)
+        if theme_event is not None:
+            theme_event.connect(self._apply_interface_style)
         for combo in (self.channel_1_combo, self.channel_2_combo):
-            combo.currentIndexChanged.connect(self._schedule_if_live)
+            combo.currentIndexChanged.connect(self._handle_input_change)
             combo.currentIndexChanged.connect(self._sync_scale_from_selected)
             combo.currentIndexChanged.connect(self._update_result_actions)
             combo.currentIndexChanged.connect(self._update_display_control_availability)
@@ -505,6 +693,12 @@ class RaccWidget(QWidget):
         self.xy_scale_spin.valueChanged.connect(self._apply_display_scale)
         self.z_scale_slider.valueChanged.connect(self._apply_display_scale)
         self.z_scale_spin.valueChanged.connect(self._apply_display_scale)
+        self.xy_scale_reset_button.clicked.connect(
+            lambda: self.xy_scale_spin.setValue(DEFAULT_DISPLAY_SCALE)
+        )
+        self.z_scale_reset_button.clicked.connect(
+            lambda: self.z_scale_spin.setValue(DEFAULT_DISPLAY_SCALE)
+        )
         self.bounding_box_checkbox.toggled.connect(
             self._apply_bounding_box_visibility
         )
@@ -697,14 +891,33 @@ class RaccWidget(QWidget):
         spin.valueChanged.connect(update_slider)
         return slider, spin
 
-    def _add_labeled_control(self, layout, row: int, label: str, slider, spin) -> None:
+    def _add_labeled_control(
+        self, layout, row: int, label: str, slider, spin, *, reset_button=None
+    ) -> None:
         layout.addWidget(QLabel(label), row, 0)
         layout.addWidget(slider, row, 1)
-        layout.addWidget(spin, row, 2)
+        if reset_button is None:
+            layout.addWidget(spin, row, 2)
+        else:
+            spin.setMaximumWidth(86)
+            field = QHBoxLayout()
+            field.setContentsMargins(0, 0, 0, 0)
+            field.setSpacing(4)
+            field.addWidget(spin)
+            field.addWidget(reset_button)
+            layout.addLayout(field, row, 2)
 
     def _schedule_if_live(self, *args) -> None:
         if self.live_checkbox.isChecked():
             self._debounce_timer.start()
+
+    def _handle_input_change(self, *args) -> None:
+        # An old pair's worker must not replace the current diagnostics while
+        # the next pair's debounced calculation is waiting to start.
+        self._latest_job_id += 1
+        self.scatter_widget.set_result(None)
+        self._set_status("Channels changed. Run RACC to calculate this pair.")
+        self._schedule_if_live()
 
     def _mark_stale_analysis_if_not_live(self, *args) -> None:
         if self.live_checkbox.isChecked() or self._result_layer() is None:
@@ -854,6 +1067,21 @@ class RaccWidget(QWidget):
             volume_is_active and self._selected_rendering_mode() != "mip"
         )
         self.rendering_combo.setEnabled(volume_is_active)
+        if volume_is_active:
+            self.volume_note.setText(
+                "Volume controls apply in 3D. Slices and fixed Z-projections "
+                "show retained pixels at full opacity."
+            )
+        elif is_3d:
+            self.volume_note.setText(
+                "Currently viewing 2D. Volume controls become available in "
+                "a 3D view; visibility filters and colors still apply here."
+            )
+        else:
+            self.volume_note.setText(
+                "Select two volume channels to use 3D rendering. "
+                "For 2D images, use visibility filters and colors below."
+            )
         for control in (
             self.intensity_opacity_slider,
             self.intensity_opacity_spin,
@@ -1046,15 +1274,49 @@ class RaccWidget(QWidget):
                 if visible:
                     layer.bounding_box.blending = "translucent_no_depth"
                 layer.bounding_box.visible = visible
+                if visible:
+                    refresh_bounding_box_clipping(self.viewer, layer)
 
     def _refresh_bounding_box_after_view_change(self) -> None:
         self._refresh_bounding_box_visibility()
         QTimer.singleShot(0, self._refresh_bounding_box_visibility)
 
     def _update_result_actions(self, *args) -> None:
-        self.export_button.setEnabled(self._result_layer() is not None)
+        try:
+            selected_layers = self._selected_layers()
+        except RaccError:
+            inputs_ready = False
+            is_volume = False
+        else:
+            inputs_ready = True
+            is_volume = any(int(layer.ndim) >= 3 for layer in selected_layers)
+        dimension = "3D" if is_volume else "2D"
+        self.overlay_button.setText(f"{dimension} channels")
+        self.racc_button.setText(f"{dimension} RACC map")
+        self.side_by_side_button.setText(f"{dimension} side by side")
+        self.mip_button.setText("2D Z max projection")
+        self.projection_note.setVisible(is_volume)
+        self.run_button.setEnabled(inputs_ready)
+        self.overlay_button.setEnabled(inputs_ready)
+        has_result = self._result_layer() is not None
+        for button in (
+            self.export_button, self.racc_button,
+            self.side_by_side_button,
+        ):
+            button.setEnabled(has_result)
+        self.mip_button.setEnabled(has_result and is_volume)
+        self.mip_button.setToolTip(
+            "Compare fixed 2D maximum-intensity projections along Z, "
+            "derived from the full 3D analysis."
+            if is_volume else "Z projections require 3D input stacks."
+        )
+        self.side_by_side_button.setToolTip(
+            f"Compare channel intensities with the RACC map in {dimension}."
+            if has_result else "Run RACC for the selected channels first."
+        )
 
     def run_racc(self) -> None:
+        self._debounce_timer.stop()
         try:
             channel_1_layer, channel_2_layer = self._selected_layers()
         except RaccError as error:
@@ -1139,6 +1401,12 @@ class RaccWidget(QWidget):
             return
         if pair is None:
             return
+        try:
+            ch1, ch2 = self._selected_layers()
+        except RaccError:
+            return
+        if pair != (ch1.name, ch2.name):
+            return
 
         name = _result_name(pair)
         layer = None
@@ -1190,9 +1458,12 @@ class RaccWidget(QWidget):
 
         warnings = " ".join(result.warnings)
         self._set_status(
-            f"RACC complete: {result.parameters.overlap_voxels} overlap voxels "
-            f"({result.parameters.overlap_fraction:.2%}). {warnings}".strip()
+            f"RACC complete. Voxels meeting both thresholds: "
+            f"{result.parameters.overlap_voxels} "
+            f"({result.parameters.overlap_fraction:.2%} of all voxels). "
+            f"{warnings}".strip()
         )
+        self.result_ready.emit(layer)
 
     def _handle_error(self, error: Exception) -> None:
         self._set_status(f"RACC failed: {error}")
