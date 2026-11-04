@@ -58,6 +58,19 @@ def test_regression_uses_overlap_population_not_single_channel_context():
     assert np.count_nonzero(result.index[ch2 < 5]) == 0
 
 
+def test_overlap_histogram_filters_voxels_before_binning():
+    ch1 = np.array([[27.3, 27.7, 27.8, 40.0], [40.0, 58.0, 80.0, 255.0]])
+    ch2 = np.array([[60.2, 60.2, 57.9, 60.0], [65.0, 76.0, 90.0, 120.0]])
+    result = compute_racc(ch1, ch2, threshold_1=27.5, threshold_2=58.0)
+    overlap = result.overlap_scatter_histogram
+
+    # Both first voxels share a bin, but only one meets the threshold.
+    assert result.scatter_histogram[27, 60] == 2
+    assert overlap[27, 60] == 1
+    assert overlap[27, 58] == 0
+    assert overlap.sum() == result.parameters.overlap_voxels == 6
+
+
 def test_empty_overlap_mask_raises():
     ch1 = np.ones((8, 8), dtype=np.float32) * 10
     ch2 = np.zeros((8, 8), dtype=np.float32)

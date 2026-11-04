@@ -84,7 +84,10 @@ source .venv/bin/activate.fish
    Expand `Colors` or `Scale & bounding box` for other appearance controls.
    Appearance settings do not change the calculated or exported RACC values.
 10. On Analysis, expand `Advanced method settings` for theta and percentile,
-    or `Analysis diagnostics` for the scatter plot. `Update automatically`
+    or `Analysis diagnostics` for the scatter plot. Use `Log intensity` to space
+    both axes logarithmically and `Focus above thresholds` to emphasize the
+    voxels that meet both thresholds. Turn off `Show fit guides` to inspect
+    the histogram with only the channel threshold lines. `Update automatically`
     controls recalculation after analysis edits.
 11. Press `Export RACC TIFF` to save the numeric RACC result stack for use in
     other software.

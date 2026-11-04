@@ -159,6 +159,29 @@ def test_settings_disclosure_and_tabs_preserve_analysis_state(qtbot):
     assert not widget._debounce_timer.isActive()
 
 
+def test_scatter_grows_with_dock_width_and_stays_square(qtbot):
+    widget = RaccWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.resize(MINIMUM_WIDGET_WIDTH, 620)
+    widget.show()
+    widget.diagnostics_section.set_expanded(True)
+
+    scatter = widget.scatter_widget
+    qtbot.waitUntil(lambda: scatter._plot_rect().width() >= 280)
+    narrow_plot = scatter._plot_rect()
+    assert narrow_plot.width() == narrow_plot.height()
+
+    # Offscreen Qt can fall back to unusually wide font metrics.
+    content_width = widget._content_widget.minimumSizeHint().width()
+    scroll_width = widget._scroll_area.verticalScrollBar().sizeHint().width()
+    wide_width = max(MINIMUM_WIDGET_WIDTH, content_width + scroll_width) + 100
+    widget.resize(wide_width, 620)
+    qtbot.waitUntil(lambda: scatter._plot_rect().width() >= narrow_plot.width() + 90)
+    wide_plot = scatter._plot_rect()
+    assert wide_plot.width() == wide_plot.height()
+    assert widget._scroll_area.verticalScrollBar().maximum() > 0
+
+
 def test_primary_actions_stay_visible_while_settings_scroll(qtbot):
     widget = RaccWidget(_Viewer())
     qtbot.addWidget(widget)

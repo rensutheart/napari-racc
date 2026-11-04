@@ -47,6 +47,7 @@ class RaccResult:
     parameters: RaccParameters
     scatter_histogram: np.ndarray
     warnings: tuple[str, ...] = ()
+    overlap_scatter_histogram: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -344,15 +345,18 @@ def compute_racc(
         overlap_fraction=overlap_voxels / total_voxels,
     )
 
+    scatter_histogram = compute_scatter_histogram(ch1, ch2, intensity_max=intensity_max)
+    overlap_scatter_histogram = scatter_histogram
+    if overlap_voxels < total_voxels:
+        overlap_scatter_histogram = compute_scatter_histogram(
+            x, y, intensity_max=intensity_max
+        )
     return RaccResult(
         index=index,
         parameters=parameters,
-        scatter_histogram=compute_scatter_histogram(
-            ch1,
-            ch2,
-            intensity_max=intensity_max,
-        ),
+        scatter_histogram=scatter_histogram,
         warnings=warnings,
+        overlap_scatter_histogram=overlap_scatter_histogram,
     )
 
 

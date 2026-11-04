@@ -326,8 +326,25 @@ class RaccWidget(QWidget):
         self.status_label = QLabel("Select two image layers.")
         self.status_label.setWordWrap(True)
         self.scatter_widget = ScatterHistogramWidget()
+        self.log_intensity_button = QPushButton("Log intensity")
+        self.log_intensity_button.setCheckable(True)
+        self.log_intensity_button.setToolTip(
+            "Show both channel intensity axes on a log scale that includes zero."
+        )
+        self.focus_thresholds_checkbox = QCheckBox("Focus above thresholds")
+        self.focus_thresholds_checkbox.setToolTip(
+            "Plot only voxels that meet both thresholds and brighten sparse bins."
+        )
+        self.show_fit_guides_checkbox = QCheckBox("Show fit guides")
+        self.show_fit_guides_checkbox.setChecked(True)
+        self.show_fit_guides_checkbox.setToolTip(
+            "Show the regression, percentile band and projected-intensity cap."
+        )
         self.percentile_fill_checkbox = QCheckBox("Fill percentile band")
         self.percentile_fill_checkbox.setChecked(False)
+        self.percentile_fill_checkbox.setToolTip(
+            "Shade the area within the percentile distance cutoff of the fitted line."
+        )
 
         self._debounce_timer = QTimer(self)
         self._debounce_timer.setInterval(250)
@@ -425,8 +442,17 @@ class RaccWidget(QWidget):
         diagnostic_layout.addWidget(self._note(
             "Channel intensity distribution and regression used by RACC."
         ))
+        scatter_options = QHBoxLayout()
+        scatter_options.addWidget(self.log_intensity_button)
+        scatter_options.addWidget(self.focus_thresholds_checkbox)
+        scatter_options.addStretch()
+        diagnostic_layout.addLayout(scatter_options)
         diagnostic_layout.addWidget(self.scatter_widget)
-        diagnostic_layout.addWidget(self.percentile_fill_checkbox)
+        guides_options = QHBoxLayout()
+        guides_options.addWidget(self.show_fit_guides_checkbox)
+        guides_options.addWidget(self.percentile_fill_checkbox)
+        guides_options.addStretch()
+        diagnostic_layout.addLayout(guides_options)
         self.diagnostics_section = _DisclosureSection(
             "Analysis diagnostics", diagnostic_body
         )
@@ -745,6 +771,16 @@ class RaccWidget(QWidget):
         )
         self.colormap_combo.currentTextChanged.connect(
             self._apply_racc_display_style
+        )
+        self.log_intensity_button.toggled.connect(self.scatter_widget.set_log_intensity)
+        self.focus_thresholds_checkbox.toggled.connect(
+            self.scatter_widget.set_focus_thresholds
+        )
+        self.show_fit_guides_checkbox.toggled.connect(
+            self.scatter_widget.set_show_fit_guides
+        )
+        self.show_fit_guides_checkbox.toggled.connect(
+            self.percentile_fill_checkbox.setEnabled
         )
         self.percentile_fill_checkbox.toggled.connect(
             self.scatter_widget.set_show_percentile_fill

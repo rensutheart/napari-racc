@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 - 2026-11-04
+
+- Fixed clipped regression lines and percentile bands in the scatter plot.
+- Added logarithmic intensity axes and a toggle for the fitted guides.
+- Added a focused histogram of voxels that meet both thresholds, with improved
+  visibility for sparse bins.
+- Made the square plot grow with the width of the dock.
+
 ## 0.4.0 - 2026-11-04
 
 - Improved scatter histogram contrast for images with large empty backgrounds,
